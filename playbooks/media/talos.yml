@@ -1,0 +1,131 @@
+---
+# Publish the fleet's boot image.
+#
+# One image for every machine, not one per node. The machines are told nothing at
+# boot -- no address, no configuration URL -- so every kernel command line is
+# identical and a single Factory schematic covers the fleet. What used to be baked
+# in per node is discovered instead: the machines come up on DHCP in maintenance
+# mode, and pokerops.baremetal.discover.talos works out which of their links are
+# on the provisioning network before anything is written.
+#
+# That is what removes the last of the prior knowledge. Per-node images needed an
+# interface name for `ip=` and a MAC to key a configuration URL by, and neither is
+# knowable before a machine has booted once.
+- name: Publish Talos boot media
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    talos_version: "{{ _talos_release }}"
+  tasks:
+    # Read from the local toolchain rather than looked up upstream. `talosctl gen
+    # config` bakes in the Kubernetes version its own binary defaults to, and a
+    # node refuses a Kubernetes newer than its Talos supports, so the image has to
+    # track talosctl rather than a moving pointer.
+    #
+    # GitHub's /releases/latest is what this replaces: it orders by publication
+    # date, so a patch on an older branch outranks a newer minor. It answered
+    # v1.12.12 while the pinned talosctl was v1.13.8, which built images a minor
+    # behind the configs generated for them -- every node rejected its config.
+    - name: Read the Talos toolchain version
+      ansible.builtin.command:
+        cmd: talosctl version --client --short
+      changed_when: false
+      register: _talos_toolchain
+
+    - name: Resolve the Talos release
+      ansible.builtin.set_fact:
+        _talos_toolchain_version: "{{ _version }}"
+        # Empty means track the toolchain; `true` is what makes "" count as unset.
+        _talos_release: "{{ baremetal_talos_release | default(_version, true) }}"
+      vars:
+        # `version --client --short` prints a header line and then the version.
+        _version: "{{ _talos_toolchain.stdout_lines | last | split | last }}"
+
+    # Nothing else catches this. The Kubernetes version comes from talosctl and
+    # the Talos version from the image, and `talosctl validate` reads only the
+    # former -- it passes on a config no node in the fleet will accept.
+    - name: Assert the release matches the toolchain
+      ansible.builtin.assert:
+        that:
+          - _talos_release | regex_search('^v[0-9]+\.[0-9]+') == _talos_toolchain_version | regex_search('^v[0-9]+\.[0-9]+')
+        fail_msg: >-
+          baremetal_talos_release is {{ _talos_release }} but talosctl is
+          {{ _talos_toolchain_version }}. Pin the toolchain to match, or drop the override.
+
+    # console=ttyS0 is the only customization, and it is identical on every
+    # machine -- which is what lets one schematic serve the fleet. It is also the
+    # difference between a machine that fails to boot being legible over serial
+    # and being opaque; the stock image does not set it.
+    - name: Register the Talos image schematic
+      ansible.builtin.uri:
+        url: https://factory.talos.dev/schematics
+        method: POST
+        body: |
+          customization:
+            extraKernelArgs:
+              - console=ttyS0
+        status_code: [200, 201]
+      register: _talos_schematic
+
+    - name: Set URL facts
+      ansible.builtin.set_fact:
+        # Keyed by schematic and version: both change the image, and a name encoding
+        # neither would let the cache check serve a stale build forever.
+        talos_image_url: >-
+          http://{{ baremetal_media_server_address }}/talos-{{ _image_path }}
+      vars:
+        _image_path: "talos-{{ _talos_schematic.json.id[:12] }}-{{ talos_version }}.iso"
+
+    - name: Check whether the boot image is already published
+      ansible.builtin.uri:
+        url: "{{ talos_image_url }}"
+        method: HEAD
+        status_code: [200, 404]
+      register: _baremetal_boot_image
+
+    - name: Publish the boot image
+      when: _baremetal_boot_image.status == 404
+      block:
+        - name: Create boot image download directory
+          ansible.builtin.tempfile:
+            state: directory
+          register: _baremetal_boot_download
+
+        - name: Download the boot image
+          ansible.builtin.get_url:
+            url: >-
+              https://factory.talos.dev/image/{{ _talos_schematic.json.id }}/{{
+                talos_version }}/metal-amd64.iso
+            dest: "{{ _baremetal_boot_download.path }}/boot.iso"
+            mode: "0644"
+            # Factory builds on first request for a schematic it has not served
+            # before, so this waits on a build rather than a download.
+            timeout: "{{ baremetal_boot_image_timeout }}"
+
+        - name: Publish the boot image
+          ansible.builtin.uri:
+            url: "{{ talos_image_url }}"
+            method: PUT
+            src: "{{ _baremetal_boot_download.path }}/boot.iso"
+            status_code: [200, 201, 204]
+      always:
+        - name: Remove boot image download directory
+          ansible.builtin.file:
+            path: "{{ _baremetal_boot_download.path }}"
+            state: absent
+          failed_when: false
+
+    # Copied rather than re-uploaded: dufs implements WebDAV COPY, so this is a
+    # file operation on the server whatever the image size. The cache name carries
+    # the schematic and version so a rebuild cannot serve a stale image, while the
+    # boot URL stays stable for boot.yml to insert.
+    - name: Publish the image as the fleet boot image
+      ansible.builtin.uri:
+        url: "{{ talos_image_url }}"
+        method: COPY
+        headers:
+          Destination: "{{ baremetal_media_url_boot }}"
+        status_code: [200, 201, 204]

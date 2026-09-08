@@ -1,0 +1,130 @@
+---
+# Asserts what the boot sequence is supposed to have achieved, read back from the
+# BMC rather than from anything the converge left behind: the machine is on, it
+# was pointed at removable media, and both images are attached from the media
+# server.
+#
+# It does not stop there: the second play asserts the cluster the machines were
+# supposed to form actually exists, and that every machine is in it under the
+# hostname the inventory gave it.
+# The media URLs resolve through localhost's facts, and the play below runs
+# against nodes. Ansible finalises every task argument including fail_msg, so
+# without this the assert fails on its own failure message.
+- name: Gather required facts
+  ansible.builtin.import_playbook: pokerops.baremetal.facts
+
+- name: Verify
+  hosts: "{{ baremetal_node_group }}"
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    redfish_system: "https://{{ baremetal_bmc_address }}/redfish/v1/Systems/{{ baremetal_bmc_system_id }}"
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ baremetal_bmc_username }}"
+      url_password: "{{ baremetal_bmc_password }}"
+      force_basic_auth: true
+      validate_certs: "{{ baremetal_bmc_validate_certs }}"
+  tasks:
+    - name: Read the Redfish system
+      ansible.builtin.uri:
+        url: "{{ redfish_system }}"
+      register: _verify_system
+
+    - name: Assert the machine is powered on and set to boot removable media
+      ansible.builtin.assert:
+        that:
+          - _verify_system.json.PowerState == 'On'
+          - _verify_system.json.Boot.BootSourceOverrideTarget == 'Cd'
+        fail_msg: >-
+          Expected PowerState=On and BootSourceOverrideTarget=Cd, got
+          {{ _verify_system.json.PowerState }} /
+          {{ _verify_system.json.Boot.BootSourceOverrideTarget }}.
+
+    - name: Read the attached boot media
+      ansible.builtin.uri:
+        url: "{{ redfish_system }}/VirtualMedia/Cd"
+      register: _verify_media
+
+    - name: Assert the boot image is attached from the media server
+      ansible.builtin.assert:
+        that:
+          - _verify_media.json.Inserted
+          - _verify_media.json.Image == baremetal_media_url_boot
+        fail_msg: >-
+          Expected {{ baremetal_media_url_boot }} on Cd;
+          found {{ _verify_media.json.Image | default('nothing') }}.
+
+    # The address is on a bond, and the bond was built from links nobody
+    # declared. This is the whole discovery path in one assertion: the machine
+    # booted knowing nothing, DHCPed, was found, was asked which of its links sat
+    # on the provisioning network, and came back with those links bonded and
+    # carrying the address the inventory asked for.
+    - name: Read the node's addresses
+      ansible.builtin.command:
+        cmd: >-
+          talosctl get addresses --output json
+          --talosconfig {{ baremetal_talos_config_directory }}/talosconfig
+          --endpoints {{ baremetal_host_address }}
+          --nodes {{ baremetal_host_address }}
+      changed_when: false
+      register: _verify_addresses
+
+    - name: Assert the node's address is carried by the bond
+      ansible.builtin.assert:
+        that:
+          - _carriers | select('equalto', 'bond0') | list | length > 0
+        fail_msg: >-
+          {{ inventory_hostname }} holds {{ baremetal_host_address }} on
+          {{ _carriers | join(', ') | default('nothing', true) }} rather than on
+          bond0. Discovery found
+          {{ baremetal_bond_members | length }} provisioning
+          interface(s): {{ baremetal_bond_members | join(', ') }}.
+      vars:
+        # `get -o json` concatenates documents rather than emitting one per line,
+        # so this splits on the boundary instead of on newlines.
+        _documents: >-
+          {{ ('[' ~ (_verify_addresses.stdout | regex_replace('}\s*{', '},{')) ~ ']') | from_json }}
+        _carriers: >-
+          {{ _documents | map(attribute='spec')
+             | selectattr('address', 'equalto', baremetal_host_address ~ '/' ~ baremetal_network_prefix)
+             | map(attribute='linkName') | list }}
+
+- name: Verify cluster membership
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    controlplane_nodes: >-
+      {{ groups[baremetal_talos_controlplane_group]
+         | map('extract', hostvars, 'baremetal_host_address') | list }}
+    node_hostnames: >-
+      {{ groups[baremetal_node_group]
+         | map('extract', hostvars, 'baremetal_host_name') | list }}
+  tasks:
+    - name: Read cluster members
+      ansible.builtin.command:
+        cmd: >-
+          talosctl get members
+          --talosconfig {{ baremetal_talos_config_directory }}/talosconfig
+          --endpoints {{ controlplane_nodes | first }}
+          --nodes {{ controlplane_nodes | first }}
+      changed_when: false
+      register: _verify_members
+
+    # Checked by hostname, which is what makes this more than a head count: the
+    # name comes from the inventory, travels through a per-node machine config
+    # and is only visible here if that config reached the machine it was built
+    # for. Two machines given each other's config would still total six.
+    - name: Assert every node joined the cluster under its configured hostname
+      ansible.builtin.assert:
+        that:
+          - item in _verify_members.stdout
+        fail_msg: >-
+          {{ item }} is not a member of the cluster. Members found:
+          {{ _verify_members.stdout }}
+      loop: "{{ node_hostnames }}"

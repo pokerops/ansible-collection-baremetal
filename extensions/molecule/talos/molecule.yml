@@ -1,0 +1,26 @@
+---
+# The talos scenario reuses the default scenario wholesale -- its create and
+# destroy playbooks and its inventory, both inherited from ../config.yml -- and
+# differs only in what it converges and verifies. Machines, BMC emulator and
+# media server are identical; what runs against them is the collection's talos
+# profile rather than nothing.
+ansible:
+  playbooks:
+    # This scenario's own files, and the only reason it exists. Relative paths
+    # resolve against the scenario directory, so these override the shared
+    # create and destroy without touching them.
+    converge: converge.yml
+    verify: verify.yml
+
+scenario:
+  name: talos
+  # No idempotence stage: converging boots a machine, which is a state change by
+  # definition -- a second run re-inserts media and powers on again.
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - converge
+    - verify
+    - destroy

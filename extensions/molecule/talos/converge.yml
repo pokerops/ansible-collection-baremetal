@@ -1,0 +1,5 @@
+---
+# The whole point of this scenario: run the collection's talos profile against
+# the machines the default scenario's create playbook stood up.
+- name: Converge
+  ansible.builtin.import_playbook: pokerops.baremetal.talos

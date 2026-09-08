@@ -1,0 +1,17 @@
+---
+# Stands the environment up and tears it down; what runs against the machines
+# lives in the profile scenarios, which reuse this scenario's create, destroy and
+# inventory. Everything shared sits in ../config.yml.
+scenario:
+  name: default
+  # Only the stages this scenario has playbooks for. Converge, verify and the
+  # rest belong to the profile scenarios, which reuse this create and destroy.
+  #
+  # `syntax` is absent for the same reason: it is hardcoded to syntax-check the
+  # converge playbook, so it cannot run in a scenario that has none. The profile
+  # scenarios do have one and keep the stage.
+  test_sequence:
+    - dependency
+    - destroy
+    - create
+    - destroy

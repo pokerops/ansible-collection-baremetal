@@ -1,0 +1,115 @@
+---
+- name: Boot nodes from virtual media
+  hosts: "{{ baremetal_node_group }}"
+  gather_facts: false
+  connection: local
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    # Concurrent Redfish calls are not reliably served, so every state-changing
+    # one is retried rather than trusted on its first answer. sushy keeps its
+    # emulator state in SQLite and answers 500 "database is locked" when six
+    # machines are driven at once; iDRAC rate-limits and returns transient 500s
+    # under the same load. Both recover on a retry seconds later, and none of
+    # these operations minds being repeated -- the module reports no change for
+    # media already inserted or a machine already in the requested power state.
+    bmc_retries: "{{ baremetal_bmc_retries }}"
+    bmc_delay: "{{ baremetal_bmc_retry_delay }}"
+  module_defaults:
+    community.general.redfish_command:
+      category: "{{ baremetal_bmc_media_category }}"
+      baseuri: "{{ baremetal_bmc_address }}"
+      username: "{{ baremetal_bmc_username }}"
+      password: "{{ baremetal_bmc_password }}"
+      validate_certs: "{{ baremetal_bmc_validate_certs }}"
+      resource_id: "{{ baremetal_bmc_system_id }}"
+  tasks:
+    - name: Power off before changing boot media
+      community.general.redfish_command:
+        category: Systems
+        command: PowerForceOff
+      register: _baremetal_power_off
+      until: _baremetal_power_off is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+
+    # Whatever is attached, not just what we are about to attach. Ejecting by the
+    # image we intend to insert leaves a slot occupied whenever the previous run
+    # used a different URL, and the insert then fails with "Unable to find an
+    # available VirtualMedia resource".
+    - name: Read attached virtual media
+      community.general.redfish_info:
+        category: "{{ baremetal_bmc_media_category }}"
+        command: GetVirtualMedia
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+      register: _baremetal_vmedia
+      until: _baremetal_vmedia is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+
+    - name: Eject stale media
+      community.general.redfish_command:
+        command: VirtualMediaEject
+        virtual_media:
+          image_url: "{{ item }}"
+      loop: >-
+        {{ _baremetal_vmedia.redfish_facts.virtual_media.entries | map('last') | flatten
+           | selectattr('Image', 'defined') | map(attribute='Image')
+           | select('string') | select() | unique | list }}
+      failed_when: false
+
+    - name: Insert boot media
+      community.general.redfish_command:
+        command: VirtualMediaInsert
+        virtual_media:
+          image_url: "{{ baremetal_media_url_boot }}"
+          media_types:
+            - CD
+            - DVD
+      register: _baremetal_boot_media
+      until: _baremetal_boot_media is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+
+    # Only profiles that deliver configuration on a volume have seed media. Talos
+    # fetches its own over HTTP instead, so there is nothing to attach.
+    - name: Insert seed media
+      community.general.redfish_command:
+        command: VirtualMediaInsert
+        virtual_media:
+          image_url: "{{ baremetal_media_url_seed }}"
+          media_types:
+            - USBStick
+      register: _baremetal_seed_media
+      until: _baremetal_seed_media is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+      when: baremetal_media_url_seed | length > 0
+
+    - name: Boot from virtual media on the next start only
+      community.general.redfish_command:
+        category: Systems
+        command: SetOneTimeBoot
+        bootdevice: Cd
+      register: _baremetal_boot_source
+      until: _baremetal_boot_source is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+
+    # A BMC that accepts PowerOn has not necessarily started the machine. sushy
+    # reported success for two domains out of six that it then left stopped, and
+    # nothing downstream told them apart from the four that booted -- they simply
+    # never appeared, and the run failed much later waiting for machines that were
+    # never running. Since the module reports no change once a machine is already
+    # on, repeating until then both issues the command and confirms it took.
+    - name: Power on
+      community.general.redfish_command:
+        category: Systems
+        command: PowerOn
+      register: _baremetal_power
+      until: _baremetal_power is not failed and not _baremetal_power.changed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"

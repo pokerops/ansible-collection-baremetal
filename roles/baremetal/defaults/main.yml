@@ -1,0 +1,190 @@
+---
+# The collection's interface. Every knob a playbook reads is declared here, so
+# this file alone documents what can be set and what it defaults to -- including
+# the group names, which a play's `hosts:` resolves from these defaults like any
+# other variable, provided the play applies the role.
+#
+# Nothing here is referenced without a default. An undefined name in `hosts:` is
+# not an empty match that skips the play quietly: it aborts the run with
+# "Error processing keyword 'hosts'".
+
+# Which hosts the playbooks act on, and how the talos profile tells the two
+# machine roles apart.
+baremetal_node_group: nodes
+
+# Groups that must exist and hold at least one host. Empty here because it is the
+# profile's business which groups it needs -- pokerops.baremetal.talos names its
+# control plane group when it imports the validation playbook.
+baremetal_required_groups: []
+
+## Required parameters, with nothing sensible to default them to.
+#
+# Per fleet -- how the BMC is reached:
+# baremetal_bmc_address:
+# baremetal_bmc_username:
+# baremetal_bmc_password:
+#
+# Per fleet -- the provisioning segment. A wrong gateway or prefix produces a
+# machine that boots, configures itself and reaches nothing, which reads as a
+# hardware fault rather than a typo:
+# baremetal_network_gateway:
+# baremetal_network_prefix:
+#
+# Per node -- which Redfish system this machine is. Under sushy one endpoint
+# fronts many machines and this is the libvirt domain uuid; a real chassis has
+# its own endpoint and this is usually System.Embedded.1:
+# baremetal_bmc_system_id:
+#
+# Per node, and asserted by pokerops.baremetal.validate rather than defaulted:
+# baremetal_host_address and baremetal_host_name.
+
+# --- BMC ---------------------------------------------------------------------
+
+# BMCs are reached over https with a certificate they issued themselves, which is
+# as true of iDRAC as it is of the sushy emulator.
+baremetal_bmc_validate_certs: false
+# Where virtual media hangs off the Redfish tree. Systems on everything seen so
+# far; Managers exists in the spec and some vendors use it.
+baremetal_bmc_media_category: Systems
+
+# Concurrent Redfish calls are not reliably served, so every state-changing one is
+# retried. sushy keeps emulator state in SQLite and answers 500 "database is
+# locked" when six machines are driven at once; iDRAC rate-limits and returns
+# transient 500s under the same load.
+baremetal_bmc_retries: 10
+baremetal_bmc_retry_delay: 6
+
+# --- media server ------------------------------------------------------------
+
+baremetal_media_server_address: "{{ hostvars['localhost']['ansible_default_ipv4']['address'] }}"
+# One image for the fleet. Nothing in it is per node any more -- no address, no
+# configuration URL -- so every machine boots the same URL.
+baremetal_media_url_boot: "http://{{ baremetal_media_server_address }}/boot.iso"
+# Empty by default: only profiles that deliver configuration on an attached
+# volume set it. Talos fetches its own over HTTP keyed by MAC and attaches
+# nothing, so boot.yml skips seed media entirely.
+baremetal_media_url_seed: ""
+# The media server itself. dufs rather than nginx: a single flag gives GET, PUT
+# and DELETE, so it needs no configuration file and no init hook to prepare its
+# storage. The image is a knob because an air-gapped operator has to pull it from
+# somewhere reachable.
+baremetal_media_container_name: baremetal-media
+baremetal_media_container_image: sigoden/dufs:latest
+# A named volume, so images already fetched survive a run and the cache check in
+# the profile playbooks has something to hit.
+baremetal_media_volume_name: baremetal
+baremetal_media_volume_path: /srv/media
+
+# Image Factory builds on first request for a schematic it has not served before,
+# so this waits on a build rather than a download.
+baremetal_boot_image_timeout: 600
+
+# --- discovery ---------------------------------------------------------------
+
+# Where to look for machines that have reached maintenance mode. The provisioning
+# subnet by default; narrow it to the DHCP pool on a large flat network.
+baremetal_discovery_range: >-
+  {{ (baremetal_network_gateway ~ '/' ~ baremetal_network_prefix)
+     | ansible.utils.ipaddr('network/prefix') }}
+baremetal_discovery_port: 50000
+baremetal_discovery_timeout: 900
+baremetal_discovery_interval: 15
+
+# A machine's links are read twice, this far apart, and accepted only when both
+# readings agree. Ports DHCP independently and the switch's LACP fallback timer
+# runs ahead of all of them, so a single reading catches whichever links happen to
+# be up at that instant -- and quietly builds a bond with fewer members than the
+# machine has.
+baremetal_discovery_settle: 20
+
+# Fail when a machine reports more interfaces to the BMC than were found on the
+# provisioning network. Strict by default: a cable in the wrong switch, a port
+# still inside the fallback timer, or a switch that falls back to one member
+# rather than all of them each produce a bond that works and is degraded, and none
+# of them announce themselves. Set false where some interfaces are deliberately
+# on other networks.
+baremetal_require_all_interfaces: true
+
+# --- bonding -----------------------------------------------------------------
+
+# The provisioning interfaces, by permanent address. Empty here because they are
+# discovered rather than declared: pokerops.baremetal.discover.talos fills this
+# in and persists it to host_vars. Set it by hand only to bypass discovery.
+baremetal_bond_members: []
+
+# 802.3ad against real switches. The molecule scenario overrides it: a libvirt
+# bridge speaks no LACP, so an 802.3ad bond would never find a partner, never
+# aggregate, and leave the machine unreachable.
+baremetal_bond_mode: "802.3ad"
+# layer2 -- the kernel default -- hashes on MAC, so every flow to a given target
+# lands on one member however wide the bond is. layer3+4 is what lets multiple
+# connections spread across members at all.
+baremetal_bond_hash_policy: layer3+4
+
+# --- talos profile -----------------------------------------------------------
+
+baremetal_talos_cluster_name: talos
+baremetal_talos_controlplane_group: talos_controlplane
+baremetal_talos_worker_group: talos_worker
+
+# Empty means "track the local toolchain". `talosctl gen config` bakes in the
+# Kubernetes version its own binary defaults to and a node refuses a Kubernetes
+# newer than its Talos supports, so an override here needs a talosctl pinned to
+# the same minor -- which media/talos.yml asserts rather than assumes.
+baremetal_talos_release: ""
+# Empty means discover it. The rule is the smallest disk that is not removable,
+# not read-only, not a CD-ROM and is solid state -- smallest because a machine's
+# system disk is routinely its least interesting one, and installing over the
+# large disks is the expensive mistake. Set a device path here to skip discovery.
+baremetal_talos_install_disk: ""
+
+# Part of that rule, separable because a virtio disk reports itself as rotational
+# and so nothing in the molecule scenario could satisfy it. Leave it true against
+# real hardware, where installing the system onto a spinning disk beside available
+# flash is a mistake worth failing on.
+baremetal_install_disk_require_ssd: true
+
+# Filled in by pokerops.baremetal.discover.talos and persisted to host_vars: the
+# chosen disk's device path, and the selector that pins it by a stable identifier.
+baremetal_install_disk: ""
+baremetal_install_disk_selector: {}
+
+# Where the cluster's own credentials live. `talosctl gen config` mints the
+# cluster CA, the admin certificate and the join tokens here, and they are
+# generated once rather than per run: a second run that replaced them would hand
+# out an identity no already-installed node accepts, leaving a cluster nothing
+# can talk to. Persistent by default for the same reason -- losing this directory
+# loses administrative access to the fleet.
+baremetal_talos_config_directory: >-
+  {{ lookup('ansible.builtin.env', 'HOME') }}/.talos/{{ baremetal_talos_cluster_name }}
+
+# Waiting on machines that are installing and rebooting. The API answering is not
+# readiness -- Talos serves it in maintenance mode too -- so the readiness check
+# is a call made with the cluster's own credentials, retried while the machine
+# installs and comes back.
+baremetal_talos_api_timeout: 900
+baremetal_talos_ready_retries: 60
+baremetal_talos_ready_delay: 10
+baremetal_talos_bootstrap_retries: 10
+baremetal_talos_bootstrap_delay: 15
+baremetal_talos_health_timeout: 15m
+
+# --- inventory validation ----------------------------------------------------
+
+# What pokerops.baremetal.validate insists every node carries. Extend it and
+# the existence assertions follow automatically.
+#
+# The provisioning interfaces are absent on purpose: they are discovered, not
+# declared. A machine boots with no network configuration at all, DHCPs on every
+# link, and the links that come back with an address inside the provisioning
+# subnet are the ones that get bonded.
+baremetal_required_host_vars:
+  - baremetal_host_address
+  - baremetal_host_name
+
+# Of those, the ones no two nodes may share. The interface name is deliberately
+# absent: a uniform fleet names its provisioning NIC the same way on every
+# machine, so requiring it to differ would reject the ordinary case.
+baremetal_unique_host_vars:
+  - baremetal_host_address
+  - baremetal_host_name

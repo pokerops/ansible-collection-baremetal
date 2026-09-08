@@ -1,0 +1,56 @@
+---
+# Settings shared by every scenario.
+#
+# Molecule inherits nothing between scenarios -- each molecule.yml is standalone.
+# What it does do is look for a base config and deep merge each scenario's own
+# file on top of it, searching the VCS root's .config/molecule/config.yml, then
+# this path, then the user's home. So this is the only place shared settings can
+# live without being copied into each scenario and drifting.
+dependency:
+  name: galaxy
+  options:
+    ignore-certs: false
+    ignore-errors: false
+    # Absolute. Molecule resolves a bare name against the scenario directory, so
+    # each scenario would need its own copy; this points every scenario at the one
+    # the project root already keeps for `just requirements`.
+    role-file: ${MOLECULE_PROJECT_DIRECTORY}/requirements.yml
+    requirements-file: ${MOLECULE_PROJECT_DIRECTORY}/requirements.yml
+
+ansible:
+  cfg:
+    defaults:
+      host_key_checking: false
+      verbosity: 1
+    ssh_connection:
+      pipelining: true
+  env:
+    ANSIBLE_FORCE_COLOR: "1"
+    ANSIBLE_LOAD_CALLBACK_PLUGINS: "1"
+
+  executor:
+    backend: ansible-playbook
+    args:
+      ansible_playbook:
+        - --force-handlers
+        # Absolute on purpose. molecule runs ansible-playbook with cwd set to the
+        # scenario directory, but shells out to ansible-inventory with its own
+        # cwd, so no relative path satisfies both callers.
+        #
+        # One inventory for every scenario, not a copy each: create.yml writes
+        # discovered Redfish system ids into host_vars beside it, so a scenario
+        # reading anywhere else would not see the ids the machines were created
+        # with.
+        - --inventory=${MOLECULE_PROJECT_DIRECTORY}/extensions/molecule/default/inventory/
+      ansible_navigator:
+        - --mode stdout
+        - --pull-policy missing
+        - --execution-environment-image ghcr.io/ansible/community-ansible-dev-tools:latest
+
+  playbooks:
+    # Relative playbook paths resolve against the scenario directory, so this
+    # names the default scenario's files from wherever it is merged: the profile
+    # scenarios stand their machines up exactly the way the default one does,
+    # and differ only in what they converge and verify.
+    create: ../default/create.yml
+    destroy: ../default/destroy.yml

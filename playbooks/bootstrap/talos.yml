@@ -1,0 +1,101 @@
+---
+# Turn installed machines into a cluster.
+#
+# Everything up to here is per machine: each one fetched its own configuration
+# over HTTP and installed itself, independently of every other. etcd is the first
+# step that is not per machine -- it is bootstrapped exactly once, from a single
+# control plane node. Running it on several produces that many separate clusters,
+# each convinced it is the real one, rather than one shared quorum.
+- name: Wait for machines to finish installing
+  hosts: "{{ baremetal_node_group }}"
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    # Waited on at the address the machine configuration assigns, not the one the
+    # installer booted with, so this also confirms the config was applied.
+    - name: Wait for the Talos API
+      ansible.builtin.wait_for:
+        host: "{{ baremetal_host_address }}"
+        port: 50000
+        timeout: "{{ baremetal_talos_api_timeout }}"
+
+    # The open port is not the signal. Talos serves the API in maintenance mode
+    # as well, before it has applied any configuration, and then reboots into the
+    # installed system -- so a check that stops at the port passes minutes early
+    # and hands the next play a machine that is about to disappear. That is what
+    # bootstrap hit: it reached a control plane node mid-reboot and failed on a
+    # connection error.
+    #
+    # Answering to the cluster's own credentials is what separates an installed
+    # machine from one still waiting for its config, since maintenance mode does
+    # not present a certificate this CA signed.
+    - name: Wait for the machine to run its configuration
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version
+          --talosconfig {{ baremetal_talos_config_directory }}/talosconfig
+          --endpoints {{ baremetal_host_address }}
+          --nodes {{ baremetal_host_address }}
+      changed_when: false
+      register: _talos_ready
+      until: _talos_ready is not failed
+      retries: "{{ baremetal_talos_ready_retries }}"
+      delay: "{{ baremetal_talos_ready_delay }}"
+
+- name: Bootstrap the cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    controlplane_nodes: >-
+      {{ groups[baremetal_talos_controlplane_group]
+         | map('extract', hostvars, 'baremetal_host_address') | list }}
+    worker_nodes: >-
+      {{ groups[baremetal_talos_worker_group] | default([])
+         | map('extract', hostvars, 'baremetal_host_address') | list }}
+    # Every call needs the cluster's credentials and something to talk to. The
+    # endpoint is a control plane node because that is where the API is served.
+    talosctl_options: >-
+      --talosconfig {{ baremetal_talos_config_directory }}/talosconfig
+      --endpoints {{ controlplane_nodes | first }}
+      --nodes {{ controlplane_nodes | first }}
+  tasks:
+    - name: Bootstrap etcd
+      ansible.builtin.command:
+        cmd: talosctl bootstrap {{ talosctl_options }}
+      register: _talos_bootstrap
+      changed_when: _talos_bootstrap.rc == 0
+      # Not idempotent server-side: a second attempt is refused because etcd
+      # already holds data. That refusal is the state this task exists to reach,
+      # so it is success rather than failure -- but only that one refusal, since
+      # every other error means the cluster is not up.
+      failed_when:
+        - _talos_bootstrap.rc != 0
+        - "'AlreadyExists' not in _talos_bootstrap.stderr"
+      until: _talos_bootstrap is not failed
+      retries: "{{ baremetal_talos_bootstrap_retries }}"
+      delay: "{{ baremetal_talos_bootstrap_delay }}"
+
+    # Both node lists are passed explicitly. Left to discover them, the check
+    # asks the cluster what it consists of, so a machine that never joined is
+    # simply not looked for and the cluster is pronounced healthy without it.
+    - name: Wait for the cluster to converge
+      ansible.builtin.command:
+        cmd: >-
+          talosctl health {{ talosctl_options }}
+          --control-plane-nodes {{ controlplane_nodes | join(',') }}
+          --worker-nodes {{ worker_nodes | join(',') }}
+          --wait-timeout {{ baremetal_talos_health_timeout }}
+      changed_when: false
+
+    # The one artefact of this whole pipeline that is not Talos-specific. Guarded
+    # rather than refetched so a run reports no change on a cluster that is
+    # already up; delete the file to have it issued again.
+    - name: Fetch the cluster kubeconfig
+      ansible.builtin.command:
+        cmd: talosctl kubeconfig {{ baremetal_talos_config_directory }} {{ talosctl_options }}
+        creates: "{{ baremetal_talos_config_directory }}/kubeconfig"

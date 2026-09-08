@@ -1,0 +1,131 @@
+---
+- name: Create
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  tasks:
+    # Created before tofu runs so it belongs to the invoking user. libvirt makes
+    # the pool directory as root, and would otherwise create this parent too --
+    # leaving a root-owned directory nothing else can write into.
+    - name: Create scenario state directory
+      ansible.builtin.file:
+        path: "{{ project_directory }}/.molecule"
+        state: directory
+        mode: "0755"
+
+    - name: Create inventory host_vars directory
+      ansible.builtin.file:
+        path: "{{ host_vars_directory }}"
+        state: directory
+        mode: "0755"
+
+    - name: Render tofu node variables from the inventory
+      ansible.builtin.copy:
+        content: "{{ tofu_vars_content | to_nice_json }}\n"
+        dest: "{{ tofu_vars_file }}"
+        mode: "0644"
+
+    - name: Apply tofu manifests
+      community.general.terraform:
+        binary_path: "{{ tofu_binary }}"
+        project_path: "{{ tofu_project_directory }}"
+        state: present
+        force_init: true
+        complex_vars: true
+        variables: "{{ tofu_variables }}"
+        variables_files:
+          - "{{ tofu_vars_file }}"
+      register: tofu
+
+    # libvirt assigns the domain uuid, so it cannot be authored in the inventory.
+    # Persisting it to disk rather than keeping it as a runtime fact is what lets
+    # `molecule list` and `molecule login` see it: they shell out to
+    # ansible-inventory, which re-parses the inventory in a fresh process.
+    # A directory per host, not <host>.yml. Ansible loads host_vars/<host>/ or
+    # host_vars/<host>.yml but never both, and the collection's discovery play
+    # writes the provisioning interfaces it finds into the same directory.
+    - name: Create host_vars directories
+      ansible.builtin.file:
+        path: "{{ host_vars_directory }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ node_hosts }}"
+
+    - name: Publish discovered Redfish system ids to host_vars
+      ansible.builtin.copy:
+        content: |
+          ---
+          # Molecule managed -- regenerated on create, removed on destroy.
+          baremetal_bmc_system_id: {{ tofu.outputs.system_ids.value[item] }}
+        dest: "{{ host_vars_directory }}/{{ item }}/redfish.yml"
+        mode: "0644"
+      loop: "{{ node_hosts }}"
+
+    - name: Create sushy state directory
+      ansible.builtin.file:
+        path: "{{ sushy_state_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Generate sushy TLS key
+      community.crypto.openssl_privatekey:
+        path: "{{ sushy_tls_key }}"
+        mode: "0600"
+
+    - name: Generate sushy TLS certificate
+      community.crypto.x509_certificate:
+        path: "{{ sushy_tls_cert }}"
+        privatekey_path: "{{ sushy_tls_key }}"
+        provider: selfsigned
+        mode: "0644"
+
+    - name: Write sushy auth file
+      community.general.htpasswd:
+        path: "{{ sushy_auth_file }}"
+        name: "{{ sushy_username }}"
+        password: "{{ sushy_password }}"
+        crypt_scheme: bcrypt
+        mode: "0600"
+
+    - name: Render sushy configuration
+      ansible.builtin.template:
+        src: sushy.conf.py.j2
+        dest: "{{ sushy_config_file }}"
+        mode: "0644"
+
+    - name: Start sushy BMC emulator
+      community.docker.docker_container:
+        name: "{{ sushy_container_name }}"
+        image: "{{ sushy_image }}"
+        state: started
+        recreate: true
+        published_ports:
+          - "{{ sushy_listen_address }}:{{ sushy_listen_port }}:{{ sushy_container_port }}"
+        env:
+          SUSHY_TOOLS_CONFIG: "{{ sushy_config_file }}"
+        volumes: "{{ sushy_volumes }}"
+
+    - name: Wait for the Redfish API to answer
+      ansible.builtin.uri:
+        url: "{{ sushy_endpoint }}/redfish/v1/Systems"
+        url_username: "{{ sushy_username }}"
+        url_password: "{{ sushy_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      register: sushy_systems
+      until: sushy_systems is succeeded
+      retries: 30
+      delay: 2
+
+    - name: Populate instance config
+      ansible.builtin.set_fact:
+        instance_conf: "{{ node_hosts | map('community.general.dict_kv', 'instance') | list }}"
+
+    - name: Dump instance config
+      ansible.builtin.copy:
+        content: |
+          # Molecule managed
+
+          {{ instance_conf | to_json | from_json | to_yaml }}
+        dest: "{{ molecule_instance_config }}"
+        mode: "0600"

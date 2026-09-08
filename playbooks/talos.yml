@@ -1,0 +1,33 @@
+---
+- name: Gather required facts
+  ansible.builtin.import_playbook: pokerops.baremetal.facts
+
+- name: Validate collection parameters
+  ansible.builtin.import_playbook: pokerops.baremetal.validate
+  vars:
+    # The worker group is deliberately absent: a control-plane-only cluster is a
+    # legitimate Talos deployment, so an empty one is not an error.
+    baremetal_required_groups:
+      - "{{ baremetal_talos_controlplane_group }}"
+
+- name: Start media server
+  ansible.builtin.import_playbook: pokerops.baremetal.media.start
+
+- name: Fetch Talos volumes
+  ansible.builtin.import_playbook: pokerops.baremetal.media.talos
+
+# Booting comes before configuring now, which is the whole shape of the change:
+# a machine has to be running to be asked what it is made of. It boots with no
+# configuration at all, reaches maintenance mode on DHCP, and only then is there
+# anything to discover.
+- name: Boot from virtual media
+  ansible.builtin.import_playbook: pokerops.baremetal.boot
+
+- name: Discover the provisioning interfaces
+  ansible.builtin.import_playbook: pokerops.baremetal.discover.talos
+
+- name: Configure the machines
+  ansible.builtin.import_playbook: pokerops.baremetal.seed.talos
+
+- name: Bootstrap the cluster
+  ansible.builtin.import_playbook: pokerops.baremetal.bootstrap.talos
