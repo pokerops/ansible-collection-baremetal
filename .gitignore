@@ -1,0 +1,34 @@
+# opentofu
+.terraform/
+.terraform.tfstate.lock.info
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# devbox
+.devbox/
+
+# host state
+.state/
+
+# molecule
+.ansible
+.molecule/
+extensions/molecule/*/inventory/host_vars/
+
+# cluster credentials (CA, admin certificate, join tokens)
+/talos/
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+

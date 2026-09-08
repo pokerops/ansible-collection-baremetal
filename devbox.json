@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.18.0/.schema/devbox.schema.json",
+  "include": ["github:pokerops/ansible-utils?dir=devbox/molecule"],
+  "packages": ["opentofu@latest", "talosctl@latest", "kubectl@latest"],
+  "aliases": {
+    "jt": "just talos",
+    "jtk": "just talos kubectl"
+  },
+  "shell": {
+    "init_hook": [],
+    "scripts": {}
+  }
+}
