@@ -17,12 +17,6 @@
     bmc_delay: "{{ baremetal_bmc_retry_delay }}"
   module_defaults:
     community.general.redfish_command:
-      category: "{{ baremetal_bmc_media_category }}"
-      baseuri: "{{ baremetal_bmc_address }}"
-      username: "{{ baremetal_bmc_username }}"
-      password: "{{ baremetal_bmc_password }}"
-      validate_certs: "{{ baremetal_bmc_validate_certs }}"
-      resource_id: "{{ baremetal_bmc_system_id }}"
   tasks:
     - name: Power off before changing boot media
       community.general.redfish_command:
@@ -52,6 +46,12 @@
 
     - name: Eject stale media
       community.general.redfish_command:
+        category: "{{ baremetal_bmc_media_category }}"
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
         command: VirtualMediaEject
         virtual_media:
           image_url: "{{ item }}"
@@ -63,6 +63,12 @@
 
     - name: Insert boot media
       community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: "{{ baremetal_bmc_media_category }}"
         command: VirtualMediaInsert
         virtual_media:
           image_url: "{{ baremetal_media_url_boot }}"
@@ -78,6 +84,12 @@
     # fetches its own over HTTP instead, so there is nothing to attach.
     - name: Insert seed media
       community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: "{{ baremetal_bmc_media_category }}"
         command: VirtualMediaInsert
         virtual_media:
           image_url: "{{ baremetal_media_url_seed }}"
@@ -91,6 +103,11 @@
 
     - name: Boot from virtual media on the next start only
       community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
         category: Systems
         command: SetOneTimeBoot
         bootdevice: Cd
@@ -107,6 +124,11 @@
     # on, repeating until then both issues the command and confirms it took.
     - name: Power on
       community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
         category: Systems
         command: PowerOn
       register: _baremetal_power
