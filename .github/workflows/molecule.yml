@@ -1,0 +1,29 @@
+---
+name: molecule
+permissions:
+  contents: read
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "*"
+      - "!README.md"
+      - "!galaxy.yml"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  talos:
+    name: libvirt
+    runs-on: libvirt
+    strategy:
+      max-parallel: 1
+      matrix:
+        scenario:
+          - talos
+    steps:
+      - name: Run devbox tests
+        uses: pokerops/ansible-utils@master
+        with:
+          run: just --set MOLECULE_SCENARIO ${{ matrix.scenario }} test

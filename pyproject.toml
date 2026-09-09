@@ -8,6 +8,7 @@ dependencies = []
 [dependency-groups]
 dev = [
   "bcrypt<4.2",
+  "black>=26.5.1",
   "pokerops-ansible-utils@git+https://github.com/pokerops/ansible-utils@master",
   "pytest>=9.1.1",
 ]

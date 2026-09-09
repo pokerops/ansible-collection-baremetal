@@ -1336,6 +1336,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 dev = [
     { name = "bcrypt", marker = "python_full_version >= '3.12'" },
+    { name = "black", marker = "python_full_version >= '3.12'" },
     { name = "pokerops-ansible-utils", marker = "python_full_version >= '3.12'" },
     { name = "pytest", marker = "python_full_version >= '3.12'" },
 ]
@@ -1345,6 +1346,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "bcrypt", marker = "python_full_version >= '3.12'", specifier = "<4.2" },
+    { name = "black", marker = "python_full_version >= '3.12'", specifier = ">=26.5.1" },
     { name = "pokerops-ansible-utils", marker = "python_full_version >= '3.12'", git = "https://github.com/pokerops/ansible-utils?rev=master" },
     { name = "pytest", marker = "python_full_version >= '3.12'", specifier = ">=9.1.1" },
 ]

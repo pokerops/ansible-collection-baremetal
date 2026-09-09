@@ -12,6 +12,9 @@ talosctl *args:
   TALOSCONFIG=$PWD/talos/talosconfig \
     talosctl {{args}}
 
+black:
+  @uv run black plugins/ --quiet --check
+
 pytest:
-    @uv run pytest tests/unit -q
+    @uv run pytest tests/unit --quiet
 

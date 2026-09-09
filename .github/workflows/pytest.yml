@@ -1,18 +1,16 @@
 ---
-name: lint
+name: pytest
 permissions:
   contents: read
 on:
   pull_request:
     branches: ["master"]
 jobs:
-  lint:
-    uses: pokerops/ansible-utils/.github/workflows/lint.yml@master
-  black:
-    name: black
+  pytest:
+    name: pytest
     runs-on: ubuntu-latest
     steps:
-      - name: Run black tests
+      - name: Run pytest
         uses: pokerops/ansible-utils@master
         with:
-          run: just black
+          run: just pytest

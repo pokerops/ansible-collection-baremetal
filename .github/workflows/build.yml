@@ -4,7 +4,7 @@ permissions:
   contents: read
 on:
   pull_request:
-    branches: ["main", "master"]
+    branches: ["master"]
 jobs:
   build:
     uses: pokerops/ansible-utils/.github/workflows/build.yml@master
