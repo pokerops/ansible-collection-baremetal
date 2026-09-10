@@ -1,0 +1,123 @@
+---
+- name: Boot nodes from virtual media
+  hosts: "{{ baremetal_node_group }}"
+  gather_facts: false
+  connection: local
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    bmc_retries: "{{ baremetal_bmc_retries }}"
+    bmc_delay: "{{ baremetal_bmc_retry_delay }}"
+  tasks:
+    - name: Power off before changing boot media
+      community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: Systems
+        command: PowerForceOff
+      register: _baremetal_power_off
+      until: _baremetal_power_off is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+
+    - name: Read attached virtual media
+      community.general.redfish_info:
+        category: "{{ baremetal_bmc_media_category }}"
+        command: GetVirtualMedia
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+      register: _baremetal_vmedia
+      until: _baremetal_vmedia is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+
+    - name: Eject stale media
+      community.general.redfish_command:
+        category: "{{ baremetal_bmc_media_category }}"
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        command: VirtualMediaEject
+        virtual_media:
+          image_url: "{{ item }}"
+      loop: >-
+        {{ _baremetal_vmedia.redfish_facts.virtual_media.entries | map('last') | flatten
+           | selectattr('Image', 'defined') | map(attribute='Image')
+           | select('string') | select() | unique | list }}
+      failed_when: false
+
+    - name: Insert boot media
+      community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: "{{ baremetal_bmc_media_category }}"
+        command: VirtualMediaInsert
+        virtual_media:
+          image_url: "{{ baremetal_media_url_boot }}"
+          media_types:
+            - CD
+            - DVD
+      register: _baremetal_boot_media
+      until: _baremetal_boot_media is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+
+    # Only profiles that deliver configuration on a volume have seed media. Talos
+    # fetches its own over HTTP instead, so there is nothing to attach.
+    - name: Insert seed media
+      community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: "{{ baremetal_bmc_media_category }}"
+        command: VirtualMediaInsert
+        virtual_media:
+          image_url: "{{ baremetal_media_url_seed }}"
+          media_types:
+            - USBStick
+      register: _baremetal_seed_media
+      until: _baremetal_seed_media is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+      when: baremetal_media_url_seed | length > 0
+
+    - name: Boot from virtual media on the next start only
+      community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: Systems
+        command: SetOneTimeBoot
+        bootdevice: Cd
+      register: _baremetal_boot_source
+      until: _baremetal_boot_source is not failed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
+
+    - name: Power on device
+      community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: Systems
+        command: PowerOn
+      register: _baremetal_power
+      until: _baremetal_power is not failed and not _baremetal_power.changed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"

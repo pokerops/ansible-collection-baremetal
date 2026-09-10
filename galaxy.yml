@@ -1,0 +1,37 @@
+---
+namespace: pokerops
+name: baremetal
+version: 0.0.1
+readme: README.md
+authors:
+  - Ted Cook <teodoro.cook@gmail.com>
+description: Bare metal provisioning over Redfish
+license:
+  - GPL-2.0-or-later
+tags:
+  - infrastructure
+  - linux
+  - baremetal
+  - redfish
+  - idrac
+  - talos
+  - provisioning
+dependencies:
+  ansible.utils: ">=6.0.0"
+  community.general: ">=12.0.0"
+  community.docker: ">=5.0.0"
+repository: https://github.com/pokerops/ansible-collection-baremetal
+documentation: https://github.com/pokerops/ansible-collection-baremetal
+homepage: https://github.com/pokerops/ansible-collection-baremetal
+issues: https://github.com/pokerops/ansible-collection-baremetal/issues
+build_ignore:
+  - .devbox
+  - .venv
+  - .github
+  - tofu
+  - extensions
+  - devbox.json
+  - devbox.lock
+  - pyproject.toml
+  - uv.lock
+  - TODO.md

@@ -1,0 +1,136 @@
+---
+# Generate each node's Talos machine configuration and publish it where the node
+# will look for it.
+- name: Generate Talos cluster configuration
+  hosts: "{{ baremetal_talos_controlplane_group }}"
+  connection: local
+  gather_facts: false
+  run_once: true
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Create cluster configuration directory
+      ansible.builtin.file:
+        path: "{{ baremetal_talos_config_directory }}"
+        state: directory
+        mode: "0700"
+
+    # Generated once for the cluster, not once per node: `gen config` mints the
+    # cluster CA and join tokens, so per-node runs would produce machines holding
+    # different credentials and no cluster at all.
+    #
+    # `creates` rather than `--force`: rerunning this playbook against a running
+    # cluster must not mint a second CA. It would produce configs the installed
+    # machines reject and a talosconfig that can no longer reach them.
+    - name: Generate cluster configuration
+      ansible.builtin.command:
+        cmd: >-
+          talosctl gen config {{ _cluster }} {{ _url }} --output {{ _output }}
+        creates: "{{ baremetal_talosconfig }}"
+      vars:
+        _cluster: "{{ baremetal_talos_cluster_name }}"
+        _url: "https://{{ baremetal_host_address }}:6443"
+        _output: "{{ baremetal_talos_config_directory }}"
+
+    # Baked in so talosctl works against this cluster without -e on every call:
+    # `gen config` leaves the context's endpoints empty, which makes even
+    # `talosctl version` need two flags to reach anything.
+    #
+    # Endpoints only, deliberately not `talosctl config node`. That sets the
+    # default target for every command including the destructive ones, so a bare
+    # `talosctl reset` would take the whole fleet. Which machine to act on stays
+    # something you have to say.
+    - name: Record the control plane endpoints in the talosconfig
+      ansible.builtin.command:
+        cmd: >-
+          talosctl config endpoint {{ _endpoints | join(' ') }}
+          --talosconfig {{ baremetal_talosconfig }}
+      vars:
+        _endpoints: >-
+          {{ groups[baremetal_talos_controlplane_group]
+             | map('extract', hostvars, 'baremetal_host_address') | list }}
+      changed_when: true
+
+- name: Publish node configurations
+  hosts: "{{ baremetal_node_group }}"
+  gather_facts: false
+  connection: local
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    cluster_dir: "{{ baremetal_talos_config_directory }}"
+    node_role: "{{ (baremetal_talos_controlplane_group in group_names) | ternary('controlplane', 'worker') }}"
+    node_base: "{{ cluster_dir }}/{{ node_role }}.yaml"
+    node_config: "{{ cluster_dir }}/{{ inventory_hostname }}.yaml"
+    node_patch: "{{ cluster_dir }}/{{ inventory_hostname }}.patch.yaml"
+  tasks:
+    # `auto` and `hostname` are mutually exclusive in HostnameConfig, and
+    # `gen config` emits `auto: stable`. Setting machine.network.hostname on top
+    # of that is rejected outright, so the hostname is set here instead and the
+    # automatic mode turned off.
+    - name: Render the node configuration patch
+      ansible.builtin.copy:
+        dest: "{{ node_patch }}"
+        mode: "0644"
+        content: |
+          machine:
+            network:
+              interfaces:
+                - interface: bond0
+                  bond:
+                    mode: {{ baremetal_bond_mode }}
+                    xmitHashPolicy: {{ baremetal_bond_hash_policy }}
+                    deviceSelectors:
+          {% for member in baremetal_bond_members %}
+                      - permanentAddr: "{{ member }}"
+          {% endfor %}
+                  addresses:
+                    - {{ baremetal_host_address }}/{{ baremetal_network_prefix }}
+                  routes:
+                    - network: 0.0.0.0/0
+                      gateway: {{ baremetal_network_gateway }}
+            install:
+              image: {{ baremetal_talos_install_image | default(hostvars['localhost']._talos_installer_image, true) }}
+          {% if baremetal_talos_install_disk %}
+              disk: {{ baremetal_talos_install_disk }}
+          {% elif baremetal_install_disk_selector %}
+              diskSelector:
+          {% for key, value in baremetal_install_disk_selector.items() %}
+                {{ key }}: "{{ value }}"
+          {% endfor %}
+          {% else %}
+              disk: {{ baremetal_install_disk }}
+          {% endif %}
+          ---
+          apiVersion: v1alpha1
+          kind: HostnameConfig
+          auto: "off"
+          hostname: {{ baremetal_host_name }}
+
+    - name: Apply the node configuration patch
+      ansible.builtin.command:
+        cmd: >-
+          talosctl machineconfig patch {{ node_base }}
+          --patch @{{ node_patch }}
+          --output {{ node_config }}
+      changed_when: true
+
+    # Catches a malformed config here rather than as a node that boots, fetches
+    # it, rejects it and loops -- which from the outside looks like a network
+    # fault.
+    - name: Validate the node configuration
+      ansible.builtin.command:
+        cmd: talosctl validate --config {{ node_config }} --mode metal
+      changed_when: false
+
+    # Pushed to the machine rather than published for it to fetch. The machine is
+    # in maintenance mode at an address DHCP gave it, and this is the last thing
+    # that uses that address: applying the configuration brings up the bond, moves
+    # the machine to its static address and takes the DHCP one away.
+    - name: Apply the node configuration
+      ansible.builtin.command:
+        cmd: >-
+          talosctl apply-config --insecure
+          --nodes {{ baremetal_maintenance_address }}
+          --file {{ node_config }}
+      changed_when: true

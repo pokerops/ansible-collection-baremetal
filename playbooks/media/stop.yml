@@ -1,0 +1,12 @@
+---
+- name: Stop media server
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Stop media server
+      community.docker.docker_container:
+        name: "{{ baremetal_media_container_name }}"
+        state: absent

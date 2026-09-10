@@ -1,0 +1,41 @@
+---
+- name: Gather required facts
+  ansible.builtin.import_playbook: pokerops.baremetal.facts
+
+- name: Start media server
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Start media server
+      community.docker.docker_container:
+        name: "{{ baremetal_media_container_name }}"
+        image: "{{ baremetal_media_container_image }}"
+        state: started
+        recreate: true
+        # Host networking, not a published port: a published port reaches the
+        # container through Docker's DNAT and forward chains, which traffic
+        # arriving from a libvirt guest bridge does not survive. Binding directly
+        # on the host puts the server on the provisioning network with no NAT hop,
+        # and --bind keeps it off every other interface, including loopback where
+        # something else may already hold port 80.
+        network_mode: host
+        command:
+          - "{{ baremetal_media_volume_path }}"
+          - "--allow-all"
+          - "--bind"
+          - "{{ baremetal_media_server_address }}"
+          - "--port"
+          - "80"
+        volumes:
+          - "{{ baremetal_media_volume_name }}:{{ baremetal_media_volume_path }}"
+
+    - name: Wait for the media server to answer
+      ansible.builtin.uri:
+        url: "http://{{ baremetal_media_server_address }}"
+      register: _media_server_ready
+      until: _media_server_ready is succeeded
+      retries: 30
+      delay: 2

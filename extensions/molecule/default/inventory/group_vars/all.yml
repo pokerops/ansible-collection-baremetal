@@ -1,0 +1,128 @@
+---
+# Every override this scenario applies, resolved through normal inventory
+# precedence. Playbooks read variables from the inventory and nothing else -- no
+# vars_files anywhere, so a second scenario customises purely by shipping its own
+# inventory with a different group_vars/all.yml.
+
+# --- scenario identity -------------------------------------------------------
+
+project_directory: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+scenario_name: "{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_NAME') }}"
+ephemeral_directory: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+host_vars_directory: "{{ playbook_dir }}/inventory/host_vars"
+# Every machine, whatever its profile. Profile groups nest under this one, and
+# create/destroy loop over it rather than over `all`, which also holds localhost.
+node_hosts: "{{ groups['nodes'] | default([]) }}"
+
+# --- opentofu ----------------------------------------------------------------
+
+tofu_project_directory: "{{ project_directory }}/tofu"
+# community.general.terraform stats this path before running, so a bare name off
+# PATH is not enough.
+tofu_binary: "{{ lookup('ansible.builtin.pipe', 'command -v tofu') }}"
+tofu_variables: {}
+tofu_vars_file: "{{ ephemeral_directory }}/nodes.tfvars.json"
+# The inventory is the source of truth, so tofu takes it as input rather than
+# producing it. `machine` is already the shape the `nodes` variable expects.
+tofu_nodes: "{{ dict(node_hosts | zip(node_hosts | map('extract', hostvars, 'machine'))) }}"
+# Everything tofu is told, in one place. Rendered to JSON and passed as a
+# -var-file rather than -var arguments, so nested types survive intact.
+tofu_vars_content:
+  nodes: "{{ tofu_nodes }}"
+  pool_name: "{{ libvirt_pool_name }}"
+  pool_path: "{{ libvirt_pool_path }}"
+  pool_owner: "{{ libvirt_pool_owner }}"
+  pool_group: "{{ libvirt_pool_group }}"
+
+# --- libvirt -----------------------------------------------------------------
+
+# Owned here rather than in tofu so sushy and the manifests cannot disagree:
+# there is no `default` pool to fall back on, which is sushy's own default.
+libvirt_pool_name: talos
+libvirt_pool_path: "{{ project_directory }}/.molecule/libvirt"
+# libvirt would otherwise create the pool directory 0711 root:root, leaving qemu
+# unable to open the volumes inside it.
+libvirt_pool_owner: "{{ lookup('ansible.builtin.pipe', 'id -u') }}"
+libvirt_pool_group: "{{ lookup('ansible.builtin.pipe', 'id -g') }}"
+
+# --- sushy BMC emulator ------------------------------------------------------
+
+sushy_image: quay.io/metal3-io/sushy-tools:latest
+sushy_container_name: "molecule-sushy"
+sushy_container_port: 8000
+sushy_listen_address: 127.0.0.1
+sushy_listen_port: 8000
+# TLS because community.general.redfish_* hardcodes an https:// root uri, and
+# because real BMCs are https with a self-signed cert -- so the client code is
+# exercised exactly as it will run against iDRAC.
+sushy_endpoint: "https://{{ sushy_listen_address }}:{{ sushy_listen_port }}"
+sushy_libvirt_uri: "qemu:///system"
+# Virtual media is downloaded to <state dir>/vmedia and attached to the domain by
+# path, so libvirtd on the host has to read it. The directory is bind mounted at
+# the same path inside the container to keep those paths equal.
+sushy_state_dir: "/var/tmp/molecule-sushy-{{ scenario_name }}"
+sushy_config_file: "{{ sushy_state_dir }}/conf.py"
+sushy_tls_key: "{{ sushy_state_dir }}/sushy.key"
+sushy_tls_cert: "{{ sushy_state_dir }}/sushy.crt"
+sushy_auth_file: "{{ sushy_state_dir }}/htpasswd"
+sushy_feature_set: full
+# sushy opens a read-only libvirt connection to serve reads and a read-write one
+# for writes, so both sockets have to be reachable inside the container --
+# mounting only libvirt-sock makes every GET fail with a connection error.
+sushy_volumes:
+  - "/var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock"
+  - "/var/run/libvirt/libvirt-sock-ro:/var/run/libvirt/libvirt-sock-ro"
+  - "{{ sushy_state_dir }}:{{ sushy_state_dir }}"
+# Throwaway credentials for a loopback-bound emulator. They exist so the Redfish
+# client code authenticates here exactly as it must against a real iDRAC, not to
+# protect anything.
+sushy_username: molecule
+sushy_password: molecule
+
+# --- media server ------------------------------------------------------------
+
+molecule_host_address: "{{ hostvars['localhost']['ansible_default_ipv4']['address'] }}"
+
+# -- collection variable overrides --------------------------------------------
+baremetal_bmc_address: 127.0.0.1:8000
+baremetal_bmc_username: "{{ sushy_username }}"
+baremetal_bmc_password: "{{ sushy_password }}"
+
+# The network the nodes sit on. Per-host addressing is a hostvar; these are
+# properties of the segment, so they belong to the group. There is no sensible
+# default for either -- a wrong gateway produces a node that boots and cannot
+# reach anything, which is why they are set here rather than guessed by the role.
+baremetal_network_prefix: 24
+baremetal_network_gateway: 172.16.31.1
+
+# The media server has to sit on the network the nodes are on. The role derives
+# this from ansible_default_ipv4, which on a multi-homed controller picks the leg
+# with the default route -- here the LAN, which a node on 172.16.31.0/24 cannot
+# reach. The gateway address is the controller's own leg on the provisioning
+# network, so it is both routable from the nodes and bindable locally.
+baremetal_media_server_address: "{{ baremetal_network_gateway }}"
+
+# A libvirt bridge speaks no LACP, so an 802.3ad bond would never find a partner,
+# never aggregate, and leave every machine unreachable. active-backup exercises
+# the same path -- discovery, member selection, a real bond carrying the node's
+# address -- without needing a switch to negotiate with. LACP negotiation and
+# fallback are bare-metal-only.
+baremetal_bond_mode: active-backup
+
+# At the project root rather than the operator's ~/.talos or molecule's ephemeral
+# directory. The ephemeral path is real but undiscoverable -- something like
+# ~/.ansible/tmp/molecule.y_Bv.talos/talos -- and the whole point of keeping a
+# talosconfig is being able to point talosctl at a converged cluster by hand.
+#
+# destroy.yml deletes it. These credentials must not outlive the machines they
+# belong to: `gen config` is guarded by `creates`, so a surviving directory would
+# be reused by the next run and hand new machines a cluster endpoint baked from
+# the previous inventory. Gitignored, because it holds the cluster CA.
+baremetal_talos_config_directory: "{{ project_directory }}/talos"
+
+# A virtio disk reports itself as rotational, so the solid-state half of the
+# install-disk rule cannot be satisfied here and would reject both disks. The rest
+# of the rule still gets exercised: each machine has two disks and the smaller one
+# has to be chosen, which is visible if it is not -- the installer would land on
+# the spare and the machine would never come back.
+baremetal_install_disk_require_ssd: false

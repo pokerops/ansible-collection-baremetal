@@ -1,0 +1,87 @@
+---
+# Fails fast on inventory mistakes that would otherwise surface as a machine that
+# boots and then sits there. A duplicated address or hostname errors nowhere in
+# the pipeline -- it produces two machines fighting over one identity, which looks
+# like a network fault rather than a typo.
+- name: Validate per-node parameters
+  hosts: "{{ baremetal_node_group }}"
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Assert required variables are defined for this host
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.vars', item, default='') | length > 0
+        fail_msg: >-
+          {{ inventory_hostname }} is missing {{ item }}. Every node needs one:
+          the network runs no DHCP, so nothing else makes it reachable.
+      loop: "{{ baremetal_required_host_vars }}"
+
+    # The one inventory mistake that survives every other check. A node whose
+    # address is outside the gateway's subnet gets a machine config that is
+    # internally valid and installs cleanly -- `talosctl validate` accepts it --
+    # and then cannot reach the gateway, the media server or anything else,
+    # because its only route to them is the on-link one its address does not
+    # qualify for. From the outside that is indistinguishable from a cabling
+    # fault, which is the expensive way to discover a typo.
+    #
+    # Not covered: the network and broadcast addresses are inside the subnet and
+    # pass this. They are a rarer typo than the wrong subnet, and excluding them
+    # would misfire on a /31.
+    - name: Assert this host's address sits in the provisioning subnet
+      ansible.builtin.assert:
+        that:
+          - (baremetal_host_address | ansible.utils.ipaddr(_subnet)) is truthy
+          - baremetal_host_address != baremetal_network_gateway
+        fail_msg: >-
+          {{ inventory_hostname }} has baremetal_host_address
+          {{ baremetal_host_address }}, which is not a usable address in
+          {{ _subnet }} -- the subnet implied by baremetal_network_gateway
+          {{ baremetal_network_gateway }} and baremetal_network_prefix
+          {{ baremetal_network_prefix }}.
+      vars:
+        _subnet: >-
+          {{ (baremetal_network_gateway ~ '/' ~ baremetal_network_prefix)
+             | ansible.utils.ipaddr('network/prefix') }}
+
+# Uniqueness is a property of the inventory rather than of any host, so it is
+# asserted once from the controller. Doing it inside the play above would need
+# run_once and would report a single collision once per node.
+- name: Validate inventory-wide parameters
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    baremetal_nodes: "{{ groups[baremetal_node_group] | default([]) }}"
+  tasks:
+    # A play whose `hosts:` names an empty or absent group is skipped without
+    # comment. Nothing reports it, and the first symptom is a later play failing
+    # on something the skipped one was supposed to produce -- a missing
+    # controlplane.yaml rather than an inventory with no control plane in it.
+    - name: Assert required groups hold at least one host
+      ansible.builtin.assert:
+        that:
+          - groups[item] | default([]) | length > 0
+        fail_msg: >-
+          Group {{ item }} is empty or absent from the inventory. The plays that
+          run against it would be skipped in silence and the run would fail later
+          somewhere unrelated.
+      loop: "{{ baremetal_required_groups }}"
+
+    - name: Assert unique variables are not shared across the inventory
+      ansible.builtin.assert:
+        that:
+          - values | length == values | unique | length
+        fail_msg: >-
+          {{ item }} is duplicated across the inventory: {{ duplicates | join(', ') }}.
+          Two machines cannot share one; the second to boot would collide with the first.
+      vars:
+        values: "{{ baremetal_nodes | map('extract', hostvars, item) | select('defined') | list }}"
+        duplicates: >-
+          {{ values | community.general.counter | dict2items
+             | selectattr('value', 'gt', 1) | map(attribute='key') | list }}
+      loop: "{{ baremetal_unique_host_vars }}"

@@ -1,0 +1,23 @@
+---
+# What the development and test environment installs.
+#
+# Distinct from galaxy.yml's `dependencies`, which is the contract for someone
+# installing this collection from Galaxy -- ansible-galaxy resolves those for the
+# consumer. Nothing resolves them for us: the venv carries ansible-core, which
+# bundles no collections, so without this file a clean checkout has none of them
+# and the first Redfish task fails on an unresolved module.
+#
+# A superset of galaxy.yml's runtime dependencies: the molecule scenarios also
+# reach for community.general.terraform, community.general.htpasswd and
+# community.crypto to stand the environment up. community.crypto is test-only --
+# it issues the sushy emulator's self-signed certificate -- so it is declared
+# here and not as a dependency of the collection itself.
+collections:
+  - name: ansible.utils
+    version: ">=6.0.0"
+  - name: community.general
+    version: ">=12.0.0"
+  - name: community.docker
+    version: ">=5.0.0"
+  - name: community.crypto
+    version: ">=3.0.0"
