@@ -6,20 +6,16 @@
   roles:
     - pokerops.baremetal.baremetal
   vars:
-    # Concurrent Redfish calls are not reliably served, so every state-changing
-    # one is retried rather than trusted on its first answer. sushy keeps its
-    # emulator state in SQLite and answers 500 "database is locked" when six
-    # machines are driven at once; iDRAC rate-limits and returns transient 500s
-    # under the same load. Both recover on a retry seconds later, and none of
-    # these operations minds being repeated -- the module reports no change for
-    # media already inserted or a machine already in the requested power state.
     bmc_retries: "{{ baremetal_bmc_retries }}"
     bmc_delay: "{{ baremetal_bmc_retry_delay }}"
-  module_defaults:
-    community.general.redfish_command:
   tasks:
     - name: Power off before changing boot media
       community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
         category: Systems
         command: PowerForceOff
       register: _baremetal_power_off
@@ -27,10 +23,6 @@
       retries: "{{ bmc_retries }}"
       delay: "{{ bmc_delay }}"
 
-    # Whatever is attached, not just what we are about to attach. Ejecting by the
-    # image we intend to insert leaves a slot occupied whenever the previous run
-    # used a different URL, and the insert then fails with "Unable to find an
-    # available VirtualMedia resource".
     - name: Read attached virtual media
       community.general.redfish_info:
         category: "{{ baremetal_bmc_media_category }}"
@@ -116,13 +108,7 @@
       retries: "{{ bmc_retries }}"
       delay: "{{ bmc_delay }}"
 
-    # A BMC that accepts PowerOn has not necessarily started the machine. sushy
-    # reported success for two domains out of six that it then left stopped, and
-    # nothing downstream told them apart from the four that booted -- they simply
-    # never appeared, and the run failed much later waiting for machines that were
-    # never running. Since the module reports no change once a machine is already
-    # on, repeating until then both issues the command and confirms it took.
-    - name: Power on
+    - name: Power on device
       community.general.redfish_command:
         baseuri: "{{ baremetal_bmc_address }}"
         username: "{{ baremetal_bmc_username }}"

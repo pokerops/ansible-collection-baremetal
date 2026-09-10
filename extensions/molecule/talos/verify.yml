@@ -66,7 +66,7 @@
       ansible.builtin.command:
         cmd: >-
           talosctl get addresses --output json
-          --talosconfig {{ baremetal_talos_config_directory }}/talosconfig
+          --talosconfig {{ baremetal_talosconfig }}
           --endpoints {{ baremetal_host_address }}
           --nodes {{ baremetal_host_address }}
       changed_when: false
@@ -110,7 +110,7 @@
       ansible.builtin.command:
         cmd: >-
           talosctl get members
-          --talosconfig {{ baremetal_talos_config_directory }}/talosconfig
+          --talosconfig {{ baremetal_talosconfig }}
           --endpoints {{ controlplane_nodes | first }}
           --nodes {{ controlplane_nodes | first }}
       changed_when: false

@@ -10,6 +10,11 @@
     baremetal_required_groups:
       - "{{ baremetal_talos_controlplane_group }}"
 
+# Before anything is powered off. The check is cheap and the mistake it prevents
+# is not: installer media halts a machine that is already installed.
+- name: Refuse to reinstall running machines
+  ansible.builtin.import_playbook: pokerops.baremetal.guard.talos
+
 - name: Start media server
   ansible.builtin.import_playbook: pokerops.baremetal.media.start
 

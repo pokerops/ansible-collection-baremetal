@@ -26,11 +26,30 @@
       ansible.builtin.command:
         cmd: >-
           talosctl gen config {{ _cluster }} {{ _url }} --output {{ _output }}
-        creates: "{{ _output }}/talosconfig"
+        creates: "{{ baremetal_talosconfig }}"
       vars:
         _cluster: "{{ baremetal_talos_cluster_name }}"
         _url: "https://{{ baremetal_host_address }}:6443"
         _output: "{{ baremetal_talos_config_directory }}"
+
+    # Baked in so talosctl works against this cluster without -e on every call:
+    # `gen config` leaves the context's endpoints empty, which makes even
+    # `talosctl version` need two flags to reach anything.
+    #
+    # Endpoints only, deliberately not `talosctl config node`. That sets the
+    # default target for every command including the destructive ones, so a bare
+    # `talosctl reset` would take the whole fleet. Which machine to act on stays
+    # something you have to say.
+    - name: Record the control plane endpoints in the talosconfig
+      ansible.builtin.command:
+        cmd: >-
+          talosctl config endpoint {{ _endpoints | join(' ') }}
+          --talosconfig {{ baremetal_talosconfig }}
+      vars:
+        _endpoints: >-
+          {{ groups[baremetal_talos_controlplane_group]
+             | map('extract', hostvars, 'baremetal_host_address') | list }}
+      changed_when: true
 
 - name: Publish node configurations
   hosts: "{{ baremetal_node_group }}"
@@ -71,6 +90,7 @@
                     - network: 0.0.0.0/0
                       gateway: {{ baremetal_network_gateway }}
             install:
+              image: {{ baremetal_talos_install_image | default(hostvars['localhost']._talos_installer_image, true) }}
           {% if baremetal_talos_install_disk %}
               disk: {{ baremetal_talos_install_disk }}
           {% elif baremetal_install_disk_selector %}

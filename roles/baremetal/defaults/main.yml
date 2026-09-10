@@ -136,6 +136,17 @@ baremetal_talos_release: ""
 # not read-only, not a CD-ROM and is solid state -- smallest because a machine's
 # system disk is routinely its least interesting one, and installing over the
 # large disks is the expensive mistake. Set a device path here to skip discovery.
+# Empty means derive it from the boot image's schematic, so the installed system
+# carries the same kernel arguments and extensions as the media it booted from.
+# The stock installer builds a stock machine, whatever the ISO contained.
+baremetal_talos_install_image: ""
+
+# Booting installer media over a machine that already has Talos on disk halts it
+# rather than reinstalling it, so the profile refuses by default. Set true to
+# power-cycle a running fleet on purpose.
+baremetal_reinstall: false
+baremetal_provisioned_timeout: 5
+
 baremetal_talos_install_disk: ""
 
 # Part of that rule, separable because a virtio disk reports itself as rotational
@@ -157,6 +168,12 @@ baremetal_install_disk_selector: {}
 # loses administrative access to the fleet.
 baremetal_talos_config_directory: >-
   {{ lookup('ansible.builtin.env', 'HOME') }}/.talos/{{ baremetal_talos_cluster_name }}
+
+# The credentials themselves, named once. Every talosctl call needs this path and
+# it was being rebuilt from the directory at six separate call sites -- change
+# where the cluster's files live and one of them stays behind.
+baremetal_talosconfig: "{{ baremetal_talos_config_directory }}/talosconfig"
+baremetal_kubeconfig: "{{ baremetal_talos_config_directory }}/kubeconfig"
 
 # Waiting on machines that are installing and rebooting. The API answering is not
 # readiness -- Talos serves it in maintenance mode too -- so the readiness check

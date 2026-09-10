@@ -35,7 +35,7 @@
       ansible.builtin.command:
         cmd: >-
           talosctl version
-          --talosconfig {{ baremetal_talos_config_directory }}/talosconfig
+          --talosconfig {{ baremetal_talosconfig }}
           --endpoints {{ baremetal_host_address }}
           --nodes {{ baremetal_host_address }}
       changed_when: false
@@ -60,7 +60,7 @@
     # Every call needs the cluster's credentials and something to talk to. The
     # endpoint is a control plane node because that is where the API is served.
     talosctl_options: >-
-      --talosconfig {{ baremetal_talos_config_directory }}/talosconfig
+      --talosconfig {{ baremetal_talosconfig }}
       --endpoints {{ controlplane_nodes | first }}
       --nodes {{ controlplane_nodes | first }}
   tasks:
@@ -98,4 +98,4 @@
     - name: Fetch the cluster kubeconfig
       ansible.builtin.command:
         cmd: talosctl kubeconfig {{ baremetal_talos_config_directory }} {{ talosctl_options }}
-        creates: "{{ baremetal_talos_config_directory }}/kubeconfig"
+        creates: "{{ baremetal_kubeconfig }}"

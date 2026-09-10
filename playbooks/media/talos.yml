@@ -79,6 +79,15 @@
       vars:
         _image_path: "talos-{{ _talos_schematic.json.id[:12] }}-{{ talos_version }}.iso"
 
+    # The installed system is built from this image, not from the ISO it booted.
+    # Pointing it at the stock installer silently drops everything the schematic
+    # added -- kernel arguments and system extensions alike. Confirmed on an
+    # installed machine: /proc/cmdline came back without console=ttyS0, so the
+    # serial console, the only channel into a machine that will not boot, was gone.
+    - name: Record the installer image for this schematic
+      ansible.builtin.set_fact:
+        _talos_installer_image: "factory.talos.dev/installer/{{ _talos_schematic.json.id }}:{{ talos_version }}"
+
     - name: Check whether the boot image is already published
       ansible.builtin.uri:
         url: "{{ talos_image_url }}"

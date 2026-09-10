@@ -27,34 +27,26 @@ steps. From the design discussion:
 
 ## Re-running against an installed fleet
 
-`pokerops.baremetal.talos` is not safe to re-run over a live cluster, and the talos
-scenario omits the `idempotence` stage for that reason.
+Guarded, not solved. `pokerops.baremetal.guard.talos` runs before anything powers
+off and refuses when a machine already answers on its inventory address, because
+booting installer media at an installed machine halts it rather than reinstalling
+it -- `talos.halt_if_installed=1` -- which took a live six-node cluster down once.
+Override with `baremetal_reinstall=true`.
 
-Two separate causes:
+What remains:
 
-- Factory ISOs carry `talos.config=metal-iso talos.halt_if_installed=1`. Booting the
-  installer on a machine that already has Talos on disk halts it rather than
-  reinstalling -- correct and protective, but it means `boot.yml` powers a healthy
-  node off and leaves it there.
-- `seed/talos.yml` regenerates the per-node configs each run. Harmless today because
-  `gen config` is guarded by `creates`, so the CA is stable, but the configs are
-  re-published and the machines never re-read them.
-
-This now fails loudly rather than quietly: discovery looks for machines in
-maintenance mode, and an installed machine never returns there, so the scan times
-out naming the machines it could not find instead of silently reconfiguring a live
-cluster. That is an improvement, not a fix -- `boot.yml` has already power-cycled
-the fleet into the installer by the time discovery runs.
-
-The fix is a guard before boot: skip machines already answering on 50000 with a
-configuration that matches, or require an explicit reinstall variable. Until then,
-reinstalling means `destroy` first.
+- The probe is Talos-shaped: reachability on port 50000 at `baremetal_host_address`.
+  A second OS profile needs its own notion of "already provisioned".
+- It refuses rather than skips. A fleet where some machines are built and some are
+  not has to be split by hand, or rebuilt wholesale.
+- The talos scenario still omits `idempotence`, because converge legitimately
+  changes state: it boots machines and installs them.
 
 ## What the harness cannot reach
 
 The scenario exercises discovery, subnet filtering, member selection, the
-connected-interface assertion and a real bond carrying the node's address. Three
-things it cannot exercise, all bare-metal only:
+connected-interface assertion and a real bond carrying the node's address. What it
+cannot exercise, all bare-metal only:
 
 - **LACP negotiation.** A libvirt bridge speaks no LACP, so `baremetal_bond_mode`
   is overridden to `active-backup` in the scenario. 802.3ad is untested here.
@@ -87,8 +79,10 @@ wireguard and others, nothing for LLDP); it exists as the official
 `siderolabs/lldpd` extension, and Dell iDRAC exposes switch-connection data from
 the BMC without needing the OS at all. The BMC route is the one to try first.
 
-Note that an extension only survives installation if `machine.install.image`
-points at the Factory installer for the same schematic. It does not today.
+An extension only survives installation if `machine.install.image` points at the
+Factory installer for the same schematic, which it now does -- adding
+`siderolabs/lldpd` to the schematic would carry through to the installed system
+rather than vanishing on first reboot.
 
 ## Media server teardown
 
@@ -99,10 +93,10 @@ throws away the images that make a re-run cheap.
 
 ## Smaller items
 
-- **`ansible-test sanity` is not wired up.** `just units` runs the module's unit
+- **`ansible-test sanity` is not wired up.** `just pytest` runs the module's unit
   tests, but the collection-standard gate -- which validates the DOCUMENTATION and
   RETURN blocks against the argument spec, and runs pep8 and import checks -- does
-  not. It needs the repository to sit at `ansible_collections/nephelaiio/baremetal`,
+  not. It needs the repository to sit at `ansible_collections/pokerops/baremetal`,
   which this checkout does not, so it wants a symlinked working directory in the
   recipe rather than a plain invocation.
 

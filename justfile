@@ -9,7 +9,7 @@ kubectl *args:
     kubectl {{args}}
 
 talosctl *args:
-  TALOSCONFIG=$PWD/talos/talosconfig \
+  TALOSCONFIG=./talos/talosconfig \
     talosctl {{args}}
 
 black:

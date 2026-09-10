@@ -1,0 +1,42 @@
+---
+# Refuse to reinstall machines that are already running.
+#
+# Booting installer media at a machine that already has Talos on disk does not
+# reinstall it. The Factory ISO carries `talos.halt_if_installed=1`, so the machine
+# comes up, notices the installation, and halts -- and boot.yml would have done
+# that to the whole fleet before anything downstream noticed. That is not
+# hypothetical: it happened here, and took a live six-node cluster down.
+#
+# Reachability on the API port at the address the inventory assigns is what tells
+# the two states apart. A machine waiting in maintenance mode holds a DHCP address
+# and does not answer here; one that answers has been installed and configured.
+- name: Refuse to reinstall running machines
+  hosts: "{{ baremetal_node_group }}"
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Check whether this machine is already provisioned
+      ansible.builtin.wait_for:
+        host: "{{ baremetal_host_address }}"
+        port: "{{ baremetal_discovery_port }}"
+        timeout: "{{ baremetal_provisioned_timeout }}"
+      failed_when: false
+      register: _baremetal_provisioned
+
+    # wait_for leaves `msg` empty when the port answered and fills it with a
+    # timeout when it did not; that is the only difference between the two
+    # results, since `failed` is suppressed either way.
+    - name: Refuse to boot installer media at a running machine
+      ansible.builtin.assert:
+        that:
+          - _baremetal_provisioned.msg | default('', true) | length > 0
+        fail_msg: >-
+          {{ inventory_hostname }} already answers on
+          {{ baremetal_host_address }}:{{ baremetal_discovery_port }}, so it is
+          installed and running. Booting installer media would halt it rather than
+          reinstall it, and this run would leave the fleet down instead of
+          rebuilding it. Destroy the machines first, or set baremetal_reinstall=true
+          to power-cycle them on purpose.
+      when: not baremetal_reinstall | bool
