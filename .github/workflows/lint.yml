@@ -4,15 +4,7 @@ permissions:
   contents: read
 on:
   pull_request:
-    branches: ["master"]
+    branches: ["main", "master"]
 jobs:
   lint:
     uses: pokerops/ansible-utils/.github/workflows/lint.yml@master
-  black:
-    name: black
-    runs-on: ubuntu-latest
-    steps:
-      - name: Run black tests
-        uses: pokerops/ansible-utils@master
-        with:
-          run: just black

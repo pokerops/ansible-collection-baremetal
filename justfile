@@ -13,8 +13,8 @@ talosctl *args:
     talosctl {{args}}
 
 black:
-  @uv run black plugins/ --quiet --check
+  @uv run black plugins/ tests/ --quiet --check
 
 pytest:
-    @uv run pytest tests/unit --quiet
+  @uv run pytest tests/unit --quiet
 

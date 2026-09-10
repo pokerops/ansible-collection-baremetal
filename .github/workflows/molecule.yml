@@ -4,12 +4,11 @@ permissions:
   contents: read
 on:
   pull_request:
-    branches:
-      - master
-    paths:
-      - "*"
-      - "!README.md"
-      - "!galaxy.yml"
+    branches: ["main", "master"]
+    paths-ignore:
+      - "galaxy.yml"
+      - "**.md"
+      - "**.MD"
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

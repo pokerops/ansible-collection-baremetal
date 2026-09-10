@@ -1,0 +1,19 @@
+---
+# Repo-owned: a job body with its own runs-on and steps, not a thin caller of a
+# reusable workflow. It lives in its own file rather than inside lint.yml so that
+# `just overwrite` can refresh the generated workflows without erasing it.
+name: black
+permissions:
+  contents: read
+on:
+  pull_request:
+    branches: ["main", "master"]
+jobs:
+  black:
+    name: black
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run black
+        uses: pokerops/ansible-utils@master
+        with:
+          run: just black

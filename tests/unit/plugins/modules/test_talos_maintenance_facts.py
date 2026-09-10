@@ -13,7 +13,10 @@ import pathlib
 import pytest
 
 MODULE_PATH = (
-    pathlib.Path(__file__).parents[4] / "plugins" / "modules" / "talos_maintenance_facts.py"
+    pathlib.Path(__file__).parents[4]
+    / "plugins"
+    / "modules"
+    / "talos_maintenance_facts.py"
 )
 spec = importlib.util.spec_from_file_location("talos_maintenance_facts", MODULE_PATH)
 facts = importlib.util.module_from_spec(spec)
@@ -50,7 +53,9 @@ DISKS = """
 
 
 def read(kind):
-    return facts.decode_documents({"links": LINKS, "addresses": ADDRESSES, "disks": DISKS}[kind])
+    return facts.decode_documents(
+        {"links": LINKS, "addresses": ADDRESSES, "disks": DISKS}[kind]
+    )
 
 
 class TestDecodeDocuments:
@@ -84,12 +89,19 @@ class TestLinkFacts:
 
 class TestAddresses:
     def test_attaches_addresses_to_their_link(self):
-        links = facts.attach_addresses(facts.link_facts(read("links")), read("addresses"))
-        assert [a["ip"] for a in links["ens2"]["addresses"]] == ["172.16.31.106", "fe80::1"]
+        links = facts.attach_addresses(
+            facts.link_facts(read("links")), read("addresses")
+        )
+        assert [a["ip"] for a in links["ens2"]["addresses"]] == [
+            "172.16.31.106",
+            "fe80::1",
+        ]
         assert [a["ip"] for a in links["ens3"]["addresses"]] == ["172.16.31.145"]
 
     def test_ignores_addresses_on_unknown_links(self):
-        links = facts.attach_addresses(facts.link_facts(read("links")), read("addresses"))
+        links = facts.attach_addresses(
+            facts.link_facts(read("links")), read("addresses")
+        )
         assert all("10.0.0.1" not in str(l["addresses"]) for l in links.values())
 
 
@@ -97,7 +109,10 @@ class TestDiskFacts:
     def test_reports_every_disk_without_judgement(self):
         # Selection is the caller's business; the module must not pre-filter.
         assert {d["devPath"] for d in facts.disk_facts(read("disks"))} == {
-            "/dev/vda", "/dev/vdb", "/dev/sr0", "/dev/sdc"
+            "/dev/vda",
+            "/dev/vdb",
+            "/dev/sr0",
+            "/dev/sdc",
         }
 
     def test_exposes_the_attributes_selection_needs(self):
@@ -113,7 +128,12 @@ class TestDescribe:
         machine = facts.describe("172.16.31.106", read)
         assert machine["address"] == "172.16.31.106"
         assert [l["name"] for l in machine["links"]] == [
-            "bond0", "ens2", "ens3", "flannel.1", "lo", "teql0"
+            "bond0",
+            "ens2",
+            "ens3",
+            "flannel.1",
+            "lo",
+            "teql0",
         ]
         assert len(machine["disks"]) == 4
 
@@ -133,7 +153,9 @@ class TestDeduplicate:
     def test_drops_machines_that_reported_nothing(self):
         # A failed talosctl call yields no links; such an entry identifies nothing
         # and must not be mistaken for a machine.
-        assert facts.deduplicate([{"address": "10.0.0.1", "links": [], "disks": []}]) == []
+        assert (
+            facts.deduplicate([{"address": "10.0.0.1", "links": [], "disks": []}]) == []
+        )
 
 
 @pytest.mark.parametrize("network", ["not-a-network", "172.16.31.0/99"])
