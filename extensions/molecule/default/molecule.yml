@@ -6,7 +6,7 @@ scenario:
     - create
   test_sequence:
     - dependency
-    - destroy
     - prepare
+    - destroy
     - create
     - destroy

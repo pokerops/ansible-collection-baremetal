@@ -8,9 +8,9 @@ scenario:
   name: talos
   test_sequence:
     - dependency
+    - prepare
     - destroy
     - syntax
-    - prepare
     - create
     - converge
     - idempotence
