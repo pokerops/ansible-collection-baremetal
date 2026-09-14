@@ -4,7 +4,7 @@
   connection: local
   vars:
     _libvirt_daemon_user: "{{ lookup('ansible.builtin.env', 'USER') }}"
-    _libvirt_become: "{{ lookup('ansible.builtin.env', 'CI') | default('false') | bool }}"
+    _libvirt_become: "{{ lookup('ansible.builtin.env', 'CI') | default('false', true) | bool }}"
   tasks:
     - name: Verify host distribution support
       ansible.builtin.assert:
@@ -59,3 +59,12 @@
             regexp: "^#?user ="
             line: "user = '{{ _libvirt_daemon_user }}'"
           notify: debian_libvirt_restart
+
+  handlers:
+    - name: Restart libvirt daemon
+      ansible.builtin.systemd:
+        name: libvirtd
+        state: restarted
+        enabled: true
+      listen: debian_libvirt_restart
+      become: true
