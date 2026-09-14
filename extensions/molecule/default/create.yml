@@ -4,9 +4,6 @@
   connection: local
   gather_facts: true
   tasks:
-    # Created before tofu runs so it belongs to the invoking user. libvirt makes
-    # the pool directory as root, and would otherwise create this parent too --
-    # leaving a root-owned directory nothing else can write into.
     - name: Create scenario state directory
       ansible.builtin.file:
         path: "{{ project_directory }}/.molecule"
@@ -37,13 +34,6 @@
           - "{{ tofu_vars_file }}"
       register: tofu
 
-    # libvirt assigns the domain uuid, so it cannot be authored in the inventory.
-    # Persisting it to disk rather than keeping it as a runtime fact is what lets
-    # `molecule list` and `molecule login` see it: they shell out to
-    # ansible-inventory, which re-parses the inventory in a fresh process.
-    # A directory per host, not <host>.yml. Ansible loads host_vars/<host>/ or
-    # host_vars/<host>.yml but never both, and the collection's discovery play
-    # writes the provisioning interfaces it finds into the same directory.
     - name: Create host_vars directories
       ansible.builtin.file:
         path: "{{ host_vars_directory }}/{{ item }}"

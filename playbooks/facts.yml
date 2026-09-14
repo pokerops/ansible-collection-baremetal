@@ -1,5 +1,0 @@
----
-- name: Gather controller network facts
-  hosts: localhost
-  connection: local
-  gather_facts: true

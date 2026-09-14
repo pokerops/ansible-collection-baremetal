@@ -60,19 +60,12 @@
         variables_files:
           - "{{ tofu_vars_file }}"
 
-    # The whole directory: it holds the Redfish system ids create.yml wrote and
-    # the provisioning interfaces discovery found, and neither outlives the
-    # machines they describe.
     - name: Remove discovered host facts
       ansible.builtin.file:
         path: "{{ host_vars_directory }}/{{ item }}"
         state: absent
       loop: "{{ node_hosts }}"
 
-    # The cluster CA, admin certificate and join tokens. Removed with the
-    # machines they authenticate: `gen config` only regenerates when the
-    # directory is gone, so leaving it would silently reuse an endpoint and a CA
-    # belonging to a cluster that no longer exists.
     - name: Remove cluster configuration directory
       ansible.builtin.file:
         path: "{{ baremetal_talos_config_directory }}"

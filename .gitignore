@@ -24,8 +24,6 @@ terraform.rc
 .molecule/
 extensions/molecule/*/inventory/host_vars/
 
-# cluster credentials (CA, admin certificate, join tokens)
-/talos/
 
 # python
 __pycache__/

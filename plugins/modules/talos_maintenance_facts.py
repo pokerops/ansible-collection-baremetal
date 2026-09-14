@@ -44,7 +44,7 @@ options:
     type: str
     default: talosctl
 author:
-  - nephelaiio
+  - pokerops (@pokerops)
 """
 
 EXAMPLES = r"""
@@ -83,7 +83,6 @@ import concurrent.futures
 import ipaddress
 import json
 import socket
-import subprocess
 
 from ansible.module_utils.basic import AnsibleModule
 
@@ -114,14 +113,8 @@ def link_facts(documents):
             continue
         links[name] = {
             "name": name,
-            # Talos's own definition, from LinkStatusSpec.Physical():
-            # `Type == ether && Kind == ""`. There is no `physical` field in the
-            # JSON to read instead, and without this a bond would be offered lo,
-            # bond0 and every tunnel the kernel creates.
             "physical": spec.get("type") == "ether" and not spec.get("kind"),
             "hardwareAddr": spec.get("hardwareAddr", ""),
-            # The address that survives being enslaved to a bond, which is what a
-            # bond member has to be selected by.
             "permanentAddr": spec.get("permanentAddr") or spec.get("hardwareAddr", ""),
             "linkState": bool(spec.get("linkState")),
             "addresses": [],
@@ -224,11 +217,10 @@ def reader(module):
     """A `read` callable backed by talosctl."""
 
     def read(address, kind):
-        # --insecure belongs to the subcommand, not to talosctl. As a global flag
-        # it is parsed as a command name and every call dies with
-        # `unknown command "<address>"`.
-        result = subprocess.run(
+        rc, stdout, dummy = module.run_command(
             [
+                "timeout",
+                str(module.params["command_timeout"]),
                 module.params["talosctl"],
                 "--nodes",
                 address,
@@ -238,14 +230,11 @@ def reader(module):
                 "--output",
                 "json",
             ],
-            capture_output=True,
-            text=True,
-            timeout=module.params["command_timeout"],
-            check=False,
+            check_rc=False,
         )
-        if result.returncode != 0:
+        if rc != 0:
             return []
-        return decode_documents(result.stdout)
+        return decode_documents(stdout)
 
     return read
 

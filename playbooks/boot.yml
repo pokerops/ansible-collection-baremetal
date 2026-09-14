@@ -1,6 +1,6 @@
 ---
 - name: Boot nodes from virtual media
-  hosts: "{{ baremetal_node_group }}"
+  hosts: _baremetal_talos_install
   gather_facts: false
   connection: local
   roles:
@@ -72,8 +72,6 @@
       retries: "{{ bmc_retries }}"
       delay: "{{ bmc_delay }}"
 
-    # Only profiles that deliver configuration on a volume have seed media. Talos
-    # fetches its own over HTTP instead, so there is nothing to attach.
     - name: Insert seed media
       community.general.redfish_command:
         baseuri: "{{ baremetal_bmc_address }}"

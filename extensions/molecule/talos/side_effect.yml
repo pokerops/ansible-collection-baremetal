@@ -1,3 +1,5 @@
 ---
 - name: Converge
   ansible.builtin.import_playbook: pokerops.baremetal.talos
+  vars:
+    talos_bootstrap: false

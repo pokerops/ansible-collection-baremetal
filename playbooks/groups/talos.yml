@@ -1,0 +1,101 @@
+---
+- name: Build provisioning groups
+  hosts: "{{ baremetal_talos_controlplane_group }}:{{ baremetal_talos_worker_group }}"
+  connection: local
+  strategy: linear
+  gather_facts: false
+  vars:
+    _baremetal_discovery_port: 50000
+    _baremetal_discovery_timeout: 30
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Check provisioning status
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ _baremetal_discovery_port }}"
+        timeout: "{{ _baremetal_discovery_timeout }}"
+      failed_when: false
+      register: _baremetal_provisioned
+
+    - name: Assign cluster group
+      ansible.builtin.group_by:
+        key: "_baremetal_inventory_nodes"
+      changed_when: false
+
+    - name: Assign provisioning groups
+      ansible.builtin.group_by:
+        key: "_baremetal_talos_{{ (_reinstall or _unprovisioned) | bool | ternary('install', 'member') }}"
+      changed_when: false
+      vars:
+        _unprovisioned: "{{ _baremetal_provisioned.msg | default('', true) | length > 0 }}"
+        _reinstall: "{{ baremetal_reinstall | bool }}"
+
+    - name: Debug provisioning groups # noqa: run-once[task]
+      run_once: true
+      block:
+        - name: Debug install members
+          ansible.builtin.debug:
+            msg: "The following hosts will be installed {{ groups['_baremetal_talos_install'] | default([]) }}"
+
+        - name: Debug skipped members
+          ansible.builtin.debug:
+            msg: "The following hosts will be skipped {{ groups['_baremetal_talos_member'] | default([]) }}"
+
+- name: Manage member role groups
+  hosts: _baremetal_talos_member
+  connection: local
+  strategy: linear
+  gather_facts: false
+  vars:
+    _baremetal_discovery_port: 50000
+    _baremetal_discovery_timeout: 30
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Assign member role groups
+      ansible.builtin.group_by:
+        key: "_baremetal_talos_member_{{ _control | bool | ternary('control', 'worker') }}"
+      changed_when: false
+      vars:
+        _control: "{{ baremetal_talos_controlplane_group in group_names }}"
+
+    - name: Debug provisioning groups # noqa: run-once[task]
+      run_once: true
+      block:
+        - name: Debug control nodes
+          ansible.builtin.debug:
+            msg: "The following hosts have been detected as control nodes {{ groups['_baremetal_talos_member_control'] | default([]) }}"
+
+        - name: Debug worker nodes
+          ansible.builtin.debug:
+            msg: "The following hosts have been detected as worker nodes {{ groups['_baremetal_talos_member_worker'] | default([]) }}"
+
+- name: Manage install role groups
+  hosts: _baremetal_talos_install
+  connection: local
+  strategy: linear
+  gather_facts: false
+  vars:
+    _baremetal_discovery_port: 50000
+    _baremetal_discovery_timeout: 30
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Assign install role groups
+      ansible.builtin.group_by:
+        key: "_baremetal_talos_install_{{ _control | bool | ternary('control', 'worker') }}"
+      changed_when: false
+      vars:
+        _control: "{{ baremetal_talos_controlplane_group in group_names }}"
+
+    - name: Debug provisioning groups # noqa: run-once[task]
+      run_once: true
+      block:
+        - name: Debug control nodes
+          ansible.builtin.debug:
+            msg: "The following hosts have been detected as control nodes {{ groups['_baremetal_talos_install_control'] | default([]) }}"
+
+        - name: Debug worker nodes
+          ansible.builtin.debug:
+            msg: "The following hosts have been detected as worker nodes {{ groups['_baremetal_talos_install_worker'] | default([]) }}"

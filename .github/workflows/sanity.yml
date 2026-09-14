@@ -1,0 +1,16 @@
+---
+name: sanity
+permissions:
+  contents: read
+on:
+  pull_request:
+    branches: ["main", "master"]
+jobs:
+  sanity:
+    name: sanity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run ansible-test sanity
+        uses: pokerops/ansible-utils@master
+        with:
+          run: just sanity
