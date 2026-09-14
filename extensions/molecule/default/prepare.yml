@@ -3,7 +3,7 @@
   hosts: localhost
   connection: local
   vars:
-    _libvirt_user: "{{ lookup('ansible.builtin.env', 'USER') }}"
+    _libvirt_daemon_user: "{{ lookup('ansible.builtin.env', 'USER') }}"
   tasks:
     - name: Verify host distribution support
       ansible.builtin.assert:
