@@ -4,6 +4,7 @@
   connection: local
   vars:
     _libvirt_daemon_user: "{{ lookup('ansible.builtin.env', 'USER') }}"
+    _libvirt_become: "{{ lookup('ansible.builtin.env', 'CI') | default('false') | bool }}"
   tasks:
     - name: Verify host distribution support
       ansible.builtin.assert:
