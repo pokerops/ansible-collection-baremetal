@@ -10,6 +10,7 @@ scenario:
     - dependency
     - destroy
     - syntax
+    - prepare
     - create
     - converge
     - idempotence

@@ -1,8 +1,12 @@
 ---
 scenario:
   name: default
+  create_sequence:
+    - prepare
+    - create
   test_sequence:
     - dependency
     - destroy
+    - prepare
     - create
     - destroy
