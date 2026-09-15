@@ -1,0 +1,20 @@
+---
+ansible:
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+
+scenario:
+  name: talos
+  test_sequence:
+    - dependency
+    - prepare
+    - destroy
+    - syntax
+    - create
+    - converge
+    - idempotence
+    - verify
+    - side_effect
+    - verify
+    - destroy

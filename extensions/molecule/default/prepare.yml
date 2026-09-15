@@ -1,0 +1,102 @@
+---
+- name: Prepare KVM host
+  hosts: localhost
+  connection: local
+  vars:
+    _libvirt_user: "{{ lookup('ansible.builtin.env', 'USER') }}"
+  tasks:
+    - name: Verify host distribution support
+      ansible.builtin.assert:
+        that:
+          - _distro in ['Ubuntu', 'Debian'] or _family == 'Darwin'
+          - _family == 'Darwin' or _distro == 'Ubuntu' or _version is version('12', '>=')
+          - _family == 'Darwin' or _distro == 'Debian' or _version is version('22.04', '>=')
+          - _family == 'Darwin' or _arch in ['x86_64', 'aarch64']
+        msg: >-
+          Unsupported distribution, version or architecture.
+          Supported: Ubuntu 22.04+, Debian 12+ on x86_64 or aarch64.
+      vars:
+        _arch: "{{ ansible_facts['architecture'] }}"
+        _family: "{{ ansible_facts['os_family'] }}"
+        _distro: "{{ ansible_facts['distribution'] }}"
+        _version: "{{ ansible_facts['distribution_version'] }}"
+
+    - name: Configure Debian libvirt daemon
+      when: ansible_facts['os_family'] == 'Debian'
+      become: true
+      block:
+        - name: Install deb package requirements
+          ansible.builtin.apt:
+            name: "{{ _common_packages + _arch_packages[ansible_facts['architecture']] }}"
+            update_cache: true
+          vars:
+            _common_packages:
+              - libvirt-clients
+              - libvirt-daemon-system
+              - libvirt-daemon-system-systemd
+              - xorriso
+            _arch_packages:
+              x86_64:
+                - qemu-system-x86
+                - ovmf
+              aarch64:
+                - qemu-system-arm
+                - qemu-efi-aarch64
+
+        - name: Add user to libvirt group
+          ansible.builtin.user:
+            name: "{{ _libvirt_user }}"
+            groups: "libvirt"
+            append: true
+
+        - name: Query user groups
+          ansible.builtin.command: "groups {{ _libvirt_user }}"
+          register: _user_groups
+          changed_when: false
+
+        - name: Ensure user is in libvirt group
+          ansible.builtin.assert:
+            that: _groups | select('equalto', 'libvirt') | list | length > 0
+            fail_msg: "User '{{ _libvirt_user }}' is not in the 'libvirt' group"
+          vars:
+            _groups: "{{ _user_groups.stdout.split() }}"
+
+    - name: Allow the running session to reach the libvirt socket
+      when:
+        - ansible_facts['os_family'] == 'Debian'
+        - lookup('ansible.builtin.env', 'CI') | bool
+      become: true
+      block:
+        - name: Run qemu as the invoking user
+          ansible.builtin.lineinfile:
+            dest: /etc/libvirt/qemu.conf
+            regexp: "^#?user ="
+            line: 'user = "{{ _libvirt_user }}"'
+
+        - name: Restart the libvirt daemon
+          ansible.builtin.systemd_service:
+            name: libvirtd.service
+            state: restarted
+
+        - name: Relax the libvirt socket mode
+          ansible.builtin.file:
+            path: /var/run/libvirt/libvirt-sock
+            mode: "0666"
+
+        - name: Check for hardware virtualisation
+          ansible.builtin.stat:
+            path: /dev/kvm
+          register: _kvm_device
+
+        - name: Report hardware virtualisation support
+          ansible.builtin.debug:
+            msg: >-
+              /dev/kvm present={{ _kvm_device.stat.exists }}
+              mode={{ _kvm_device.stat.mode | default('n/a') }}
+              gid={{ _kvm_device.stat.gr_name | default('n/a') }}
+
+    - name: Verify libvirt is reachable as the invoking user
+      ansible.builtin.command: virsh -c qemu:///system uri
+      become: false
+      changed_when: false
+      when: ansible_facts['os_family'] == 'Debian'

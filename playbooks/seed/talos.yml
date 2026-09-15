@@ -1,0 +1,107 @@
+---
+- name: Generate Talos cluster configuration
+  hosts: _baremetal_talos_install_control
+  connection: local
+  gather_facts: false
+  run_once: true
+  strategy: linear
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Create cluster configuration directory
+      ansible.builtin.file:
+        path: "{{ baremetal_talos_config_directory }}"
+        state: directory
+        mode: "0700"
+
+    - name: Generate cluster configuration
+      ansible.builtin.command:
+        cmd: "talosctl gen config {{ _cluster }} {{ _url }} --output {{ _output }}"
+        creates: "{{ baremetal_talosconfig }}"
+      vars:
+        _cluster: "{{ baremetal_talos_cluster_name }}"
+        _url: "https://{{ ansible_host }}:6443"
+        _output: "{{ baremetal_talos_config_directory }}"
+
+    - name: Record the control plane endpoints in the talosconfig
+      ansible.builtin.command:
+        cmd: "talosctl config endpoint {{ _endpoints }} --talosconfig {{ baremetal_talosconfig }}"
+      vars:
+        _endpoints: "{{ ansible_play_hosts | map('extract', hostvars, 'ansible_host') | join(' ') }}"
+      changed_when: true
+
+- name: Publish node configurations
+  hosts: _baremetal_talos_install
+  gather_facts: false
+  connection: local
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    cluster_dir: "{{ baremetal_talos_config_directory }}"
+    node_role: "{{ (baremetal_talos_controlplane_group in group_names) | ternary('controlplane', 'worker') }}"
+    node_base: "{{ cluster_dir }}/{{ node_role }}.yaml"
+    node_config: "{{ cluster_dir }}/{{ inventory_hostname }}.yaml"
+    node_patch: "{{ cluster_dir }}/{{ inventory_hostname }}.patch.yaml"
+  tasks:
+    - name: Render the node configuration patch
+      ansible.builtin.copy:
+        dest: "{{ node_patch }}"
+        mode: "0644"
+        content: |
+          machine:
+            network:
+              interfaces:
+                - interface: bond0
+                  bond:
+                    mode: {{ baremetal_bond_mode }}
+                    xmitHashPolicy: {{ baremetal_bond_hash_policy }}
+                    deviceSelectors:
+          {% for member in baremetal_bond_members %}
+                      - permanentAddr: "{{ member }}"
+          {% endfor %}
+                  addresses:
+                    - {{ ansible_host }}/{{ baremetal_network_prefix }}
+                  routes:
+                    - network: 0.0.0.0/0
+                      gateway: {{ baremetal_network_gateway }}
+            install:
+              image: {{ hostvars['localhost']._talos_installer_image }}
+          {% if baremetal_talos_install_disk %}
+              disk: {{ baremetal_talos_install_disk }}
+          {% elif baremetal_install_disk_selector %}
+              diskSelector:
+          {% for key, value in baremetal_install_disk_selector.items() %}
+                {{ key }}: "{{ value }}"
+          {% endfor %}
+          {% else %}
+              disk: {{ baremetal_install_disk }}
+          {% endif %}
+          ---
+          apiVersion: v1alpha1
+          kind: HostnameConfig
+          auto: "off"
+          hostname: {{ inventory_hostname }}
+          ---
+          apiVersion: v1alpha1
+          kind: ExtensionServiceConfig
+          name: lldpd
+          configFiles:
+            - content: |
+                configure lldp portidsubtype ifname
+                configure system description "Talos node"
+              mountPath: /usr/local/etc/lldpd/lldpd.conf
+
+    - name: Apply the node configuration patch
+      ansible.builtin.command:
+        cmd: "talosctl machineconfig patch {{ node_base }} --patch @{{ node_patch }} --output {{ node_config }}"
+      changed_when: true
+
+    - name: Validate the node configuration
+      ansible.builtin.command:
+        cmd: "talosctl validate --config {{ node_config }} --mode metal"
+      changed_when: false
+
+    - name: Apply the node configuration
+      ansible.builtin.command:
+        cmd: "talosctl apply-config --insecure --nodes {{ baremetal_maintenance_address }} --file {{ node_config }}"
+      changed_when: true

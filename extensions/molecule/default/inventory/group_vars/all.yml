@@ -1,0 +1,72 @@
+---
+
+# --- scenario identity -------------------------------------------------------
+
+project_directory: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+scenario_name: "{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_NAME') }}"
+ephemeral_directory: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+host_vars_directory: "{{ playbook_dir }}/inventory/host_vars"
+
+# ---  ansible inventory ------------------------------------------------------
+node_hosts: "{{ groups['all'] | difference(['localhost']) }}"
+
+# --- opentofu ----------------------------------------------------------------
+
+tofu_project_directory: "{{ project_directory }}/tofu"
+tofu_binary: "{{ lookup('ansible.builtin.pipe', 'command -v tofu') }}"
+tofu_variables: {}
+tofu_vars_file: "{{ ephemeral_directory }}/nodes.tfvars.json"
+tofu_nodes: "{{ dict(node_hosts | zip(node_hosts | map('extract', hostvars, 'machine'))) }}"
+tofu_vars_content:
+  nodes: "{{ tofu_nodes }}"
+  pool_name: "{{ libvirt_pool_name }}"
+  pool_path: "{{ libvirt_pool_path }}"
+  pool_owner: "{{ libvirt_pool_owner }}"
+  pool_group: "{{ libvirt_pool_group }}"
+
+# --- libvirt -----------------------------------------------------------------
+
+libvirt_pool_name: talos
+libvirt_pool_path: "{{ project_directory }}/.molecule/libvirt"
+libvirt_pool_owner: "{{ lookup('ansible.builtin.pipe', 'id -u') }}"
+libvirt_pool_group: "{{ lookup('ansible.builtin.pipe', 'id -g') }}"
+
+# --- sushy BMC emulator ------------------------------------------------------
+
+sushy_image: quay.io/metal3-io/sushy-tools:latest
+sushy_container_name: "molecule-sushy"
+sushy_container_port: 8000
+sushy_listen_address: 127.0.0.1
+sushy_listen_port: 8000
+sushy_endpoint: "https://{{ sushy_listen_address }}:{{ sushy_listen_port }}"
+sushy_libvirt_uri: "qemu:///system"
+sushy_state_dir: "/var/tmp/molecule-sushy-{{ scenario_name }}"
+sushy_config_file: "{{ sushy_state_dir }}/conf.py"
+sushy_tls_key: "{{ sushy_state_dir }}/sushy.key"
+sushy_tls_cert: "{{ sushy_state_dir }}/sushy.crt"
+sushy_auth_file: "{{ sushy_state_dir }}/htpasswd"
+sushy_feature_set: full
+sushy_volumes:
+  - "/var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock"
+  - "/var/run/libvirt/libvirt-sock-ro:/var/run/libvirt/libvirt-sock-ro"
+  - "{{ sushy_state_dir }}:{{ sushy_state_dir }}"
+sushy_username: molecule
+sushy_password: molecule
+
+# --- media server ------------------------------------------------------------
+
+molecule_host_address: "{{ hostvars['localhost']['ansible_default_ipv4']['address'] }}"
+
+# -- collection variable overrides --------------------------------------------
+baremetal_bmc_address: 127.0.0.1:8000
+baremetal_bmc_username: "{{ sushy_username }}"
+baremetal_bmc_password: "{{ sushy_password }}"
+
+baremetal_network_prefix: 24
+baremetal_network_gateway: 172.16.31.1
+
+baremetal_media_server_address: "{{ baremetal_network_gateway }}"
+
+baremetal_bond_mode: active-backup
+baremetal_talos_config_directory: "{{ project_directory }}/.ansible/talos"
+baremetal_install_disk_require_ssd: false

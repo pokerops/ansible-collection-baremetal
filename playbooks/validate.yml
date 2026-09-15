@@ -1,0 +1,34 @@
+---
+- name: Validate node parameters
+  hosts: _baremetal_inventory_nodes
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Assert ansible_host is in ip address format
+      ansible.builtin.assert:
+        that:
+          - ansible_host is ansible.utils.ipv4
+        fail_msg: ansible_host must be provided as ipv4 address
+
+    - name: Assert this host's address sits in the provisioning subnet
+      ansible.builtin.assert:
+        that:
+          - ansible_host is ansible.utils.in_any_network([_subnet])
+          - _subnet | ansible.utils.network_in_usable(ansible_host)
+          - ansible_host != baremetal_network_gateway
+        fail_msg: "ansible_host={{ ansible_host }} must match subnet {{ _subnet }}"
+      vars:
+        _gateway: "{{ baremetal_network_gateway ~ '/' ~ baremetal_network_prefix }}"
+        _subnet: "{{ _gateway | ansible.utils.ipaddr('network/prefix') }}"
+
+    - name: Assert ansible_host is unique across the inventory # noqa: run-once[task]
+      ansible.builtin.assert:
+        that:
+          - values | length == values | unique | length
+        fail_msg: "ansible_host is duplicated across the inventory: {{ duplicates | join(', ') }}"
+      vars:
+        values: "{{ ansible_play_hosts | map('extract', hostvars, 'ansible_host') | select('defined') | list }}"
+        duplicates: "{{ values | community.general.counter | dict2items | selectattr('value', 'gt', 1) | map(attribute='key') }}"
+      run_once: true

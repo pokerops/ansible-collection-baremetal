@@ -1,0 +1,181 @@
+---
+- name: Discover machines in maintenance mode
+  hosts: _baremetal_talos_install
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    _baremetal_discovery_network: "{{ baremetal_network_gateway }}/{{ baremetal_network_prefix }}"
+    _baremetal_discovery_range: "{{ _baremetal_discovery_network | ansible.utils.ipaddr('network/prefix') }}"
+    _baremetal_discovery_port: 50000
+    _baremetal_discovery_timeout: 900
+    _baremetal_discovery_interval: 15
+    _baremetal_discovery_settle: 20
+    _baremetal_require_all_interfaces: true
+    _baremetal_provisioning_subnet: "{{ _baremetal_discovery_range | trim }}"
+    _baremetal_install_candidates: >-
+      {{ _baremetal_machine.disks
+         | rejectattr('cdrom') | rejectattr('readonly')
+         | rejectattr('transport', 'in', ['usb', 'mmc'])
+         | selectattr('size', 'gt', 0) | list }}
+    _baremetal_eligible_disks: >-
+      {{ (_baremetal_install_candidates | rejectattr('rotational') | list)
+         if baremetal_install_disk_require_ssd | bool else _baremetal_install_candidates }}
+    _baremetal_install_disk: >-
+      {{ _baremetal_eligible_disks | sort(attribute='size') | first | default({}, true) }}
+  tasks:
+    - name: Scan provisioning network # noqa: run-once[task]
+      run_once: true
+      block:
+        - name: Scan the provisioning network for machines in maintenance mode
+          pokerops.baremetal.talos_maintenance_facts:
+            network: "{{ _baremetal_discovery_range | trim }}"
+            port: "{{ _baremetal_discovery_port }}"
+          register: _baremetal_scan
+          until: _baremetal_scan.machines | length >= (ansible_play_hosts | length)
+          retries: "{{ (_baremetal_discovery_timeout | int) // (_baremetal_discovery_interval | int) }}"
+          delay: "{{ _baremetal_discovery_interval }}"
+
+        - name: Allow the remaining links to acquire addresses
+          ansible.builtin.pause:
+            seconds: "{{ _baremetal_discovery_settle }}"
+
+        - name: Rescan once the links have settled
+          pokerops.baremetal.talos_maintenance_facts:
+            network: "{{ _baremetal_discovery_range | trim }}"
+            port: "{{ _baremetal_discovery_port }}"
+          register: _baremetal_rescan
+
+        - name: Record what was discovered
+          ansible.builtin.set_fact:
+            _baremetal_machines: "{{ _baremetal_rescan.machines }}"
+          delegate_to: localhost
+          delegate_facts: true
+
+    - name: List this machine's interfaces from the BMC
+      ansible.builtin.uri:
+        url: "https://{{ baremetal_bmc_address }}/redfish/v1/Systems/{{ baremetal_bmc_system_id }}/EthernetInterfaces"
+        url_username: "{{ baremetal_bmc_username }}"
+        url_password: "{{ baremetal_bmc_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+      register: _baremetal_bmc_interfaces
+
+    - name: Read each interface the BMC reports
+      ansible.builtin.uri:
+        url: "https://{{ baremetal_bmc_address }}{{ item['@odata.id'] }}"
+        url_username: "{{ baremetal_bmc_username }}"
+        url_password: "{{ baremetal_bmc_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+      loop: "{{ _baremetal_bmc_interfaces.json.Members }}"
+      loop_control:
+        label: "{{ item['@odata.id'] | basename }}"
+      register: _baremetal_bmc_members
+
+    - name: Collect the hardware addresses the BMC reports
+      ansible.builtin.set_fact:
+        bmc_macs: >-
+          {{ ((_members | map(attribute='json.PermanentMACAddress', default='') | list)
+              + (_members | map(attribute='json.MACAddress', default='') | list))
+             | select() | map('lower') | unique | list }}
+      vars:
+        _members: "{{ _baremetal_bmc_members.results }}"
+
+    - name: Identify this machine among those discovered
+      ansible.builtin.set_fact:
+        _baremetal_machine: "{{ item }}"
+      loop: "{{ hostvars['localhost']._baremetal_machines }}"
+      loop_control:
+        label: "{{ item.address }}"
+      when: >-
+        item.links | map(attribute='permanentAddr') | select() | map('lower') | list
+        | intersect(bmc_macs) | length > 0
+
+    - name: Assert this machine reached maintenance mode
+      ansible.builtin.assert:
+        that:
+          - _baremetal_machine is defined
+        fail_msg: >-
+          {{ inventory_hostname }} was not found in maintenance mode on
+          {{ _baremetal_provisioning_subnet }}. Either it is still booting, or none of its
+          interfaces reached the provisioning network -- on real hardware that is
+          usually a switch whose ports stay suspended because LACP fallback is
+          not configured.
+
+    - name: Match each link against the provisioning subnet
+      ansible.builtin.set_fact:
+        _links: >-
+          {{ (_links | default([])) + [item | combine({'provisioning': _on_subnet})] }}
+      loop: "{{ _baremetal_machine.links | selectattr('physical') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        _on_subnet: >-
+          {{ (item.addresses | map(attribute='ip') | list
+              | ansible.utils.ipaddr(_baremetal_provisioning_subnet) | length) > 0 }}
+
+    - name: Select the provisioning interfaces and the install disk
+      ansible.builtin.set_fact:
+        baremetal_bond_members: >-
+          {{ _links | selectattr('provisioning') | map(attribute='permanentAddr') | list }}
+        baremetal_maintenance_address: "{{ _baremetal_machine.address }}"
+        baremetal_install_disk: "{{ _baremetal_install_disk.devPath | default('') }}"
+        baremetal_install_disk_selector: >-
+          {{ {'wwid': _baremetal_install_disk.wwid} if _baremetal_install_disk.wwid
+             else ({'serial': _baremetal_install_disk.serial} if _baremetal_install_disk.serial
+             else ({'uuid': _baremetal_install_disk.uuid} if _baremetal_install_disk.uuid
+             else ({'busPath': _baremetal_install_disk.busPath} if _baremetal_install_disk.busPath else {}))) }}
+
+    - name: Assert every interface reached the provisioning network
+      ansible.builtin.assert:
+        that:
+          - baremetal_bond_members | length == bmc_macs | length
+        fail_msg: >-
+          {{ inventory_hostname }} reports {{ bmc_macs | length }} interfaces to
+          its BMC but only {{ baremetal_bond_members | length }} reached
+          {{ _baremetal_provisioning_subnet }}
+          ({{ baremetal_bond_members | join(', ') | default('none', true) }}).
+          Bonding those would drop the redundancy the rest were cabled for. Set
+          _baremetal_require_all_interfaces=false where interfaces are deliberately
+          on other networks.
+      when: _baremetal_require_all_interfaces | bool
+
+    - name: Assert a usable install disk was found
+      ansible.builtin.assert:
+        that:
+          - _baremetal_install_disk | length > 0
+        fail_msg: >-
+          {{ inventory_hostname }} reports no disk that could be installed to: it
+          needs one that is not removable, not read-only, not a CD-ROM
+          {{ baremetal_install_disk_require_ssd | bool | ternary('and is solid state', '') }}.
+          It offered
+          {{ _baremetal_machine.disks | map(attribute='devPath') | join(', ') | default('nothing', true) }}.
+          Set baremetal_talos_install_disk to choose one by hand, or
+          baremetal_install_disk_require_ssd=false if the disks are rotational.
+
+    - name: Create the host_vars directory for this machine
+      ansible.builtin.file:
+        path: "{{ inventory_dir }}/host_vars/{{ inventory_hostname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Persist what was discovered about this machine
+      ansible.builtin.copy:
+        dest: "{{ inventory_dir }}/host_vars/{{ inventory_hostname }}/discovered.yml"
+        mode: "0644"
+        content: |
+          ---
+          # Generated by pokerops.baremetal.discover.talos. Do not edit: this
+          # file is rewritten every time a machine is found in maintenance mode.
+          baremetal_bond_members:
+          {% for member in baremetal_bond_members %}
+            - "{{ member }}"
+          {% endfor %}
+
+          baremetal_install_disk: {{ baremetal_install_disk }}
+          baremetal_install_disk_selector:
+          {% for key, value in baremetal_install_disk_selector.items() %}
+            {{ key }}: "{{ value }}"
+          {% endfor %}

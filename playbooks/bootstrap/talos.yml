@@ -1,0 +1,66 @@
+---
+- name: Wait for machines to finish installing
+  hosts: _baremetal_talos_install
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Wait for the Talos API
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 50000
+        timeout: "{{ baremetal_talos_api_timeout }}"
+
+    - name: Wait for the cluster join
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _talos_ready
+      until: _talos_ready is not failed
+      retries: "{{ baremetal_talos_ready_retries }}"
+      delay: "{{ baremetal_talos_ready_delay }}"
+
+- name: Bootstrap/Update the cluster
+  hosts: "{{ baremetal_talos_controlplane_group }}"
+  connection: local
+  gather_facts: false
+  run_once: true
+  strategy: linear
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    controlplane_nodes: "{{ groups[baremetal_talos_controlplane_group] | map('extract', hostvars, 'ansible_host') }}"
+    worker_nodes: "{{ groups[baremetal_talos_worker_group] | default([]) | map('extract', hostvars, 'ansible_host') }}"
+    talosctl_options: "--talosconfig {{ baremetal_talosconfig }} --endpoints {{ ansible_host }} --nodes {{ ansible_host }}"
+  tasks:
+    - name: Bootstrap etcd
+      ansible.builtin.command:
+        cmd: talosctl bootstrap {{ talosctl_options }}
+      register: _talos_bootstrap
+      changed_when: _talos_bootstrap.rc == 0
+      failed_when:
+        - _talos_bootstrap.rc != 0
+        - "'AlreadyExists' not in _talos_bootstrap.stderr"
+      until: _talos_bootstrap is not failed
+      retries: "{{ baremetal_talos_bootstrap_retries }}"
+      delay: "{{ baremetal_talos_bootstrap_delay }}"
+
+    - name: Wait for the cluster to converge
+      ansible.builtin.command:
+        cmd: >-
+          talosctl health {{ talosctl_options }} {{ _workers }}
+          --control-plane-nodes {{ controlplane_nodes | join(',') }}
+          --wait-timeout {{ baremetal_talos_health_timeout }}
+      vars:
+        _workers: "{{ (worker_nodes | length > 0) | ternary('--worker-nodes ' + (worker_nodes | join(',')), '') }}"
+      changed_when: false
+
+    - name: Fetch the cluster kubeconfig
+      ansible.builtin.command:
+        cmd: talosctl kubeconfig {{ baremetal_talos_config_directory }} {{ talosctl_options }}
+        creates: "{{ baremetal_kubeconfig }}"

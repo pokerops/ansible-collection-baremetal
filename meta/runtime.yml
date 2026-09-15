@@ -1,0 +1,3 @@
+---
+# `just lint` fails without this key.
+requires_ansible: ">=2.16.0"

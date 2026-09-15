@@ -1,0 +1,10 @@
+---
+# actionlint runs as part of `just lint` and rejects any runs-on label it does not
+# recognise, because a typo there produces a job that queues forever rather than
+# failing. Self-hosted labels have to be declared for that check to work.
+#
+# libvirt: the molecule scenario boots real KVM machines and talks to them over a
+# libvirt network, so it cannot run on ubuntu-latest.
+self-hosted-runner:
+  labels:
+    - libvirt

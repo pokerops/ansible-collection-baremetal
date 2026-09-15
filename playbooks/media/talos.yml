@@ -1,0 +1,127 @@
+---
+- name: Publish Talos boot media
+  hosts: _baremetal_talos_install
+  connection: local
+  gather_facts: false
+  run_once: true
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    talos_version: "{{ _talos_release }}"
+  tasks:
+    - name: Read the Talos toolchain version
+      ansible.builtin.command:
+        cmd: talosctl version --client --short
+      changed_when: false
+      register: _talos_toolchain
+
+    - name: Resolve the Talos release
+      ansible.builtin.set_fact:
+        _talos_toolchain_version: "{{ _version }}"
+        _talos_release: "{{ baremetal_talos_release | default(_version, true) }}"
+      vars:
+        _version: "{{ _talos_toolchain.stdout_lines | last | split | last }}"
+
+    - name: Assert the release matches the toolchain
+      ansible.builtin.assert:
+        that:
+          - _talos_release | regex_search('^v[0-9]+\.[0-9]+') == _talos_toolchain_version | regex_search('^v[0-9]+\.[0-9]+')
+        fail_msg: >-
+          baremetal_talos_release is {{ _talos_release }} but talosctl is
+          {{ _talos_toolchain_version }}. Pin the toolchain to match, or drop the override.
+
+    - name: Register the Talos image schematic
+      ansible.builtin.uri:
+        url: https://factory.talos.dev/schematics
+        method: POST
+        body: |
+          customization:
+            extraKernelArgs:
+              - console=ttyS0
+            systemExtensions:
+              officialExtensions:
+                - siderolabs/lldpd
+        status_code: [200, 201]
+      register: _talos_schematic
+      until: _talos_schematic is not failed
+      retries: "{{ baremetal_media_retries }}"
+      delay: "{{ baremetal_media_retry_delay }}"
+
+    - name: Set URL facts
+      ansible.builtin.set_fact:
+        talos_image_url: >-
+          http://{{ baremetal_media_server_address }}/{{ _image_path }}
+      vars:
+        _image_path: "talos-{{ _talos_schematic.json.id[:12] }}-{{ talos_version }}.iso"
+
+    - name: Record the installer image for this schematic
+      ansible.builtin.set_fact:
+        _talos_installer_image: "factory.talos.dev/installer/{{ _talos_schematic.json.id }}:{{ talos_version }}"
+
+    - name: Publish the image facts on localhost
+      ansible.builtin.set_fact:
+        _talos_release: "{{ _talos_release }}"
+        _talos_installer_image: "{{ _talos_installer_image }}"
+        talos_image_url: "{{ talos_image_url }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Check whether the boot image is already published
+      ansible.builtin.uri:
+        url: "{{ talos_image_url }}"
+        method: HEAD
+        status_code: [200, 404]
+      register: _baremetal_boot_image
+      until: _baremetal_boot_image is not failed
+      retries: "{{ baremetal_media_retries }}"
+      delay: "{{ baremetal_media_retry_delay }}"
+
+    - name: Publish the boot image
+      when: _baremetal_boot_image.status == 404
+      block:
+        - name: Create boot image download directory
+          ansible.builtin.tempfile:
+            state: directory
+          register: _baremetal_boot_download
+
+        - name: Download the boot image
+          ansible.builtin.get_url:
+            url: >-
+              https://factory.talos.dev/image/{{ _talos_schematic.json.id }}/{{
+                talos_version }}/metal-amd64.iso
+            dest: "{{ _baremetal_boot_download.path }}/boot.iso"
+            mode: "0644"
+            timeout: "{{ baremetal_boot_image_timeout }}"
+          register: _baremetal_boot_fetch
+          until: _baremetal_boot_fetch is not failed
+          retries: "{{ baremetal_media_retries }}"
+          delay: "{{ baremetal_media_retry_delay }}"
+
+        - name: Publish the boot image
+          ansible.builtin.uri:
+            url: "{{ talos_image_url }}"
+            method: PUT
+            src: "{{ _baremetal_boot_download.path }}/boot.iso"
+            status_code: [200, 201, 204]
+          register: _baremetal_boot_put
+          until: _baremetal_boot_put is not failed
+          retries: "{{ baremetal_media_retries }}"
+          delay: "{{ baremetal_media_retry_delay }}"
+      always:
+        - name: Remove boot image download directory
+          ansible.builtin.file:
+            path: "{{ _baremetal_boot_download.path }}"
+            state: absent
+          failed_when: false
+
+    - name: Publish the image as the fleet boot image
+      ansible.builtin.uri:
+        url: "{{ talos_image_url }}"
+        method: COPY
+        headers:
+          Destination: "{{ baremetal_media_url_boot }}"
+        status_code: [200, 201, 204]
+      register: _baremetal_boot_copy
+      until: _baremetal_boot_copy is not failed
+      retries: "{{ baremetal_media_retries }}"
+      delay: "{{ baremetal_media_retry_delay }}"

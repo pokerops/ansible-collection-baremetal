@@ -1,0 +1,120 @@
+---
+- name: Gather controller facts
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+- name: Rebuild the provisioning groups
+  ansible.builtin.import_playbook: pokerops.baremetal.groups.talos
+
+- name: Verify
+  hosts: _baremetal_nodes
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    redfish_system: "https://{{ baremetal_bmc_address }}/redfish/v1/Systems/{{ baremetal_bmc_system_id }}"
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ baremetal_bmc_username }}"
+      url_password: "{{ baremetal_bmc_password }}"
+      force_basic_auth: true
+      validate_certs: "{{ baremetal_bmc_validate_certs }}"
+  tasks:
+    - name: Read the Redfish system
+      ansible.builtin.uri:
+        url: "{{ redfish_system }}"
+      register: _verify_system
+
+    - name: Assert the machine is powered on and set to boot removable media
+      ansible.builtin.assert:
+        that:
+          - _verify_system.json.PowerState == 'On'
+          - _verify_system.json.Boot.BootSourceOverrideTarget == 'Cd'
+        fail_msg: >-
+          Expected PowerState=On and BootSourceOverrideTarget=Cd, got
+          {{ _verify_system.json.PowerState }} /
+          {{ _verify_system.json.Boot.BootSourceOverrideTarget }}.
+
+    - name: Read the attached boot media
+      ansible.builtin.uri:
+        url: "{{ redfish_system }}/VirtualMedia/Cd"
+      register: _verify_media
+
+    - name: Assert the boot image is attached from the media server
+      ansible.builtin.assert:
+        that:
+          - _verify_media.json.Inserted
+          - _verify_media.json.Image == baremetal_media_url_boot
+        fail_msg: >-
+          Expected {{ baremetal_media_url_boot }} on Cd;
+          found {{ _verify_media.json.Image | default('nothing') }}.
+
+    - name: Read the node's addresses
+      ansible.builtin.command:
+        cmd: >-
+          talosctl get addresses --output json
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _verify_addresses
+
+    - name: Assert the node's address is carried by the bond
+      ansible.builtin.assert:
+        that:
+          - _carriers | select('equalto', 'bond0') | list | length > 0
+        fail_msg: >-
+          {{ inventory_hostname }} holds {{ ansible_host }} on
+          {{ _carriers | join(', ') | default('nothing', true) }} rather than on
+          bond0. Discovery found
+          {{ baremetal_bond_members | length }} provisioning
+          interface(s): {{ baremetal_bond_members | join(', ') }}.
+      vars:
+        _documents: >-
+          {{ ('[' ~ (_verify_addresses.stdout | regex_replace('}\s*{', '},{')) ~ ']') | from_json }}
+        _carriers: >-
+          {{ _documents | map(attribute='spec')
+             | selectattr('address', 'equalto', ansible_host ~ '/' ~ baremetal_network_prefix)
+             | map(attribute='linkName') | list }}
+
+- name: Verify cluster membership
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the cluster's nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _verify_nodes
+
+    - name: Assert the cluster is made of exactly the machines in the inventory
+      ansible.builtin.assert:
+        that:
+          - _expected | symmetric_difference(_joined) | length == 0
+        fail_msg: >-
+          Cluster membership does not match the inventory.
+          Missing: {{ _expected | difference(_joined) | join(', ') | default('none', true) }}.
+          Unexpected: {{ _joined | difference(_expected) | join(', ') | default('none', true) }}.
+      vars:
+        _expected: "{{ groups['_baremetal_inventory_nodes'] | sort }}"
+        _joined: "{{ _verify_nodes.resources | map(attribute='metadata.name') | sort }}"
+
+    - name: Assert every node reports Ready
+      ansible.builtin.assert:
+        that:
+          - _ready == ['True']
+        fail_msg: >-
+          {{ item.metadata.name }} is not Ready
+          (Ready={{ _ready | join(',') | default('absent', true) }}).
+      loop: "{{ _verify_nodes.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      vars:
+        _ready: >-
+          {{ item.status.conditions | selectattr('type', 'equalto', 'Ready')
+             | map(attribute='status') | list }}

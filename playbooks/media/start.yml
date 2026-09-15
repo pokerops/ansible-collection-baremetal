@@ -1,0 +1,32 @@
+---
+- name: Start media server
+  hosts: localhost
+  gather_facts: true
+  connection: local
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Start media server
+      community.docker.docker_container:
+        name: "{{ baremetal_media_container_name }}"
+        image: "{{ baremetal_media_container_image }}"
+        state: started
+        network_mode: host
+        command:
+          - "{{ baremetal_media_volume_path }}"
+          - "--allow-all"
+          - "--bind"
+          - "{{ baremetal_media_server_address }}"
+          - "--port"
+          - "80"
+        volumes:
+          - "{{ baremetal_media_volume_name }}:{{ baremetal_media_volume_path }}"
+      changed_when: false
+
+    - name: Wait for the media server to answer
+      ansible.builtin.uri:
+        url: "http://{{ baremetal_media_server_address }}"
+      register: _media_server_ready
+      until: _media_server_ready is succeeded
+      retries: 30
+      delay: 2

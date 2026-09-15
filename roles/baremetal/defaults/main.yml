@@ -1,0 +1,74 @@
+---
+# --- required ------------------------------------------------------------------
+#
+# Per node:
+#   baremetal_bmc_address
+#   baremetal_bmc_username
+#   baremetal_bmc_password
+#
+# Per fleet:
+#   baremetal_network_gateway
+#   baremetal_network_prefix
+
+baremetal_bmc_system_id: "System.Embedded.1"
+
+# --- BMC ---------------------------------------------------------------------
+
+baremetal_bmc_validate_certs: false
+baremetal_bmc_media_category: Systems
+
+baremetal_bmc_retries: 10
+baremetal_bmc_retry_delay: 6
+
+# --- media server ------------------------------------------------------------
+
+baremetal_media_server_address: "{{ hostvars['localhost']['ansible_default_ipv4']['address'] }}"
+baremetal_media_url_boot: "http://{{ baremetal_media_server_address }}/boot.iso"
+baremetal_media_url_seed: ""
+baremetal_media_container_name: baremetal-media
+baremetal_media_container_image: sigoden/dufs:latest
+baremetal_media_volume_name: baremetal
+baremetal_media_volume_path: /srv/media
+
+baremetal_media_retries: 5
+baremetal_media_retry_delay: 10
+
+baremetal_boot_image_timeout: 600
+
+# --- bonding -----------------------------------------------------------------
+
+baremetal_bond_members: []
+
+baremetal_bond_mode: "802.3ad"
+baremetal_bond_hash_policy: layer3+4
+
+# --- talos profile -----------------------------------------------------------
+
+baremetal_talos_controlplane_group: talos_controlplane
+baremetal_talos_worker_group: talos_worker
+
+baremetal_talos_cluster_name: talos
+
+baremetal_talos_release: ""
+
+baremetal_reinstall: false
+
+baremetal_talos_install_disk: ""
+
+baremetal_install_disk_require_ssd: true
+
+baremetal_install_disk: ""
+baremetal_install_disk_selector: {}
+
+baremetal_talos_config_directory: >-
+  {{ lookup('ansible.builtin.env', 'HOME') }}/.talos/{{ baremetal_talos_cluster_name }}
+
+baremetal_talosconfig: "{{ baremetal_talos_config_directory }}/talosconfig"
+baremetal_kubeconfig: "{{ baremetal_talos_config_directory }}/kubeconfig"
+
+baremetal_talos_api_timeout: 900
+baremetal_talos_ready_retries: 60
+baremetal_talos_ready_delay: 10
+baremetal_talos_bootstrap_retries: 10
+baremetal_talos_bootstrap_delay: 15
+baremetal_talos_health_timeout: 15m

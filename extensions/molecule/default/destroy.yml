@@ -1,0 +1,99 @@
+---
+- name: Destroy KVM guests
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Collect sushy emulator logs
+      ansible.builtin.command: "docker logs --tail 40 {{ sushy_container_name }}"
+      register: _sushy_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Report sushy emulator logs
+      ansible.builtin.debug:
+        msg: "{{ (_sushy_logs.stdout_lines | default([])) + (_sushy_logs.stderr_lines | default([])) }}"
+
+    - name: Stop sushy BMC emulator
+      community.docker.docker_container:
+        name: "{{ sushy_container_name }}"
+        state: absent
+
+    - name: Remove sushy state directory
+      ansible.builtin.file:
+        path: "{{ sushy_state_dir }}"
+        state: absent
+
+    - name: Activate the storage pool so its volumes can be listed
+      ansible.builtin.command:
+        cmd: >-
+          virsh -c "{{ sushy_libvirt_uri }}" pool-start "{{ libvirt_pool_name }}"
+      register: baremetal_pool_start
+      changed_when: baremetal_pool_start.rc == 0
+      failed_when: >-
+        baremetal_pool_start.rc != 0 and not (baremetal_pool_start.stderr is
+        search('already active|no storage pool with matching name|Storage pool not found'))
+
+    - name: List volumes in the storage pool
+      ansible.builtin.command:
+        cmd: >-
+          virsh -c "{{ sushy_libvirt_uri }}" vol-list "{{ libvirt_pool_name }}"
+      register: baremetal_pool_volumes
+      changed_when: false
+      failed_when: >-
+        baremetal_pool_volumes.rc != 0 and not (baremetal_pool_volumes.stderr is
+        search('no storage pool with matching name|Storage pool not found'))
+
+    - name: Remove virtual media left in the storage pool
+      ansible.builtin.command:
+        cmd: >-
+          virsh -c "{{ sushy_libvirt_uri }}" vol-delete --pool "{{ libvirt_pool_name }}" "{{ item }}"
+      loop: >-
+        {{ baremetal_pool_volumes.stdout_lines[2:] | default([])
+           | map('regex_replace', '^\s*(\S+).*$', '\1')
+           | select()
+           | reject('in', node_hosts | map('regex_replace', '$', '.qcow2') | list)
+           | list }}
+      changed_when: true
+      when: baremetal_pool_volumes.rc == 0
+
+    - name: Render tofu node variables from the inventory
+      ansible.builtin.copy:
+        content: "{{ tofu_vars_content | to_nice_json }}\n"
+        dest: "{{ tofu_vars_file }}"
+        mode: "0644"
+
+    - name: Destroy tofu managed resources
+      community.general.terraform:
+        binary_path: "{{ tofu_binary }}"
+        project_path: "{{ tofu_project_directory }}"
+        state: absent
+        force_init: true
+        complex_vars: true
+        variables: "{{ tofu_variables }}"
+        variables_files:
+          - "{{ tofu_vars_file }}"
+
+    - name: Remove discovered host facts
+      ansible.builtin.file:
+        path: "{{ host_vars_directory }}/{{ item }}"
+        state: absent
+      loop: "{{ node_hosts }}"
+
+    - name: Remove cluster configuration directory
+      ansible.builtin.file:
+        path: "{{ baremetal_talos_config_directory }}"
+        state: absent
+
+    - name: Populate instance config
+      ansible.builtin.set_fact:
+        instance_conf: []
+
+    - name: Dump instance config
+      ansible.builtin.copy:
+        content: |
+          # Molecule managed
+
+          {{ instance_conf | to_json | from_json | to_yaml }}
+        dest: "{{ molecule_instance_config }}"
+        mode: "0600"

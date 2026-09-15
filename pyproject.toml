@@ -1,0 +1,17 @@
+[project]
+name = "pokerops.talos"
+version = "0.0.0"
+description = ""
+requires-python = '>=3.8,<3.14'
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "bcrypt<4.2",
+  "black>=26.5.1",
+  "pokerops-ansible-utils@git+https://github.com/pokerops/ansible-utils@master",
+  "pytest>=9.1.1",
+]
+
+[tool.uv.dependency-groups]
+dev = { requires-python = ">=3.12" }
