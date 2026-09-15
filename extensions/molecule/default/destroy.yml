@@ -20,7 +20,9 @@
           virsh -c "{{ sushy_libvirt_uri }}" pool-start "{{ libvirt_pool_name }}"
       register: baremetal_pool_start
       changed_when: baremetal_pool_start.rc == 0
-      failed_when: false
+      failed_when: >-
+        baremetal_pool_start.rc != 0 and not (baremetal_pool_start.stderr is
+        search('already active|no storage pool with matching name|Storage pool not found'))
 
     - name: List volumes in the storage pool
       ansible.builtin.command:
@@ -28,7 +30,9 @@
           virsh -c "{{ sushy_libvirt_uri }}" vol-list "{{ libvirt_pool_name }}"
       register: baremetal_pool_volumes
       changed_when: false
-      failed_when: false
+      failed_when: >-
+        baremetal_pool_volumes.rc != 0 and not (baremetal_pool_volumes.stderr is
+        search('no storage pool with matching name|Storage pool not found'))
 
     - name: Remove virtual media left in the storage pool
       ansible.builtin.command:

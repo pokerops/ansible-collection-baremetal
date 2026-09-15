@@ -56,3 +56,40 @@
             fail_msg: "User '{{ _libvirt_user }}' is not in the 'libvirt' group"
           vars:
             _groups: "{{ _user_groups.stdout.split() }}"
+
+    - name: Allow the running session to reach the libvirt socket
+      when:
+        - ansible_facts['os_family'] == 'Debian'
+        - lookup('ansible.builtin.env', 'CI') | bool
+      become: true
+      block:
+        - name: Create the libvirt socket override directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/libvirtd.socket.d
+            state: directory
+            mode: "0755"
+
+        - name: Relax the libvirt socket mode
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/libvirtd.socket.d/override.conf
+            content: |
+              [Socket]
+              SocketMode=0666
+            mode: "0644"
+
+        - name: Restart the libvirt socket
+          ansible.builtin.systemd_service:
+            name: libvirtd.socket
+            state: restarted
+            daemon_reload: true
+
+        - name: Restart the libvirt daemon
+          ansible.builtin.systemd_service:
+            name: libvirtd.service
+            state: restarted
+
+    - name: Verify libvirt is reachable as the invoking user
+      ansible.builtin.command: virsh -c qemu:///system uri
+      become: false
+      changed_when: false
+      when: ansible_facts['os_family'] == 'Debian'
