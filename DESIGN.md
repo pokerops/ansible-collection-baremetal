@@ -406,6 +406,19 @@ must against a real iDRAC, not to protect anything.
 every domain on the host, while defining it at all -- even as an empty list -- denies
 everything not listed.
 
+**CI needs the libvirt socket opened to it.** The prepare play adds the invoking
+user to the `libvirt` group, but supplementary groups are fixed when a process is
+created, and a CI runner's service started long before that group existed -- so
+every process in the job, ansible and tofu alike, carries the old credentials and
+`/var/run/libvirt/libvirt-sock` (root:libvirt 0770) refuses them. The socket's mode
+is therefore relaxed directly for the run. Changing it through the systemd unit
+would be more durable but needs the socket restarted, and systemd refuses to
+restart a socket unit while its service holds it. This is gated on `CI`: a
+workstation keeps the normal mode, where the developer's login already carries the
+group. The prepare play then proves access with an unprivileged `virsh ... uri`,
+because that is the identity tofu will use -- a check that fails loudly at prepare
+time instead of surfacing later as an opaque provider error.
+
 **Domains are referenced by `source.file`** rather than `type='volume'`, because
 virt-aa-helper cannot resolve a volume reference.
 
