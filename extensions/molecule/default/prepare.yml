@@ -11,8 +11,12 @@
           - _distro in ['Ubuntu', 'Debian'] or _family == 'Darwin'
           - _family == 'Darwin' or _distro == 'Ubuntu' or _version is version('12', '>=')
           - _family == 'Darwin' or _distro == 'Debian' or _version is version('22.04', '>=')
-        msg: "Unsupported distribution or version. Supported: Ubuntu 22.04+, Debian 12+."
+          - _family == 'Darwin' or _arch in ['x86_64', 'aarch64']
+        msg: >-
+          Unsupported distribution, version or architecture.
+          Supported: Ubuntu 22.04+, Debian 12+ on x86_64 or aarch64.
       vars:
+        _arch: "{{ ansible_facts['architecture'] }}"
         _family: "{{ ansible_facts['os_family'] }}"
         _distro: "{{ ansible_facts['distribution'] }}"
         _version: "{{ ansible_facts['distribution_version'] }}"
@@ -23,21 +27,21 @@
       block:
         - name: Install deb package requirements
           ansible.builtin.apt:
-            name:
-              - qemu-kvm
-              - "{{ _qemu_efi }}"
+            name: "{{ _common_packages + _arch_packages[ansible_facts['architecture']] }}"
+            update_cache: true
+          vars:
+            _common_packages:
               - libvirt-clients
               - libvirt-daemon-system
               - libvirt-daemon-system-systemd
               - xorriso
-            update_cache: true
-          vars:
-            _is_ubuntu: "{{ ansible_facts['distribution'] == 'Ubuntu' }}"
-            _is_noble: "{{ ansible_facts['distribution_version'] is version('24.04', '>=') }}"
-            _is_debian: "{{ ansible_facts['distribution'] == 'Debian' }}"
-            _is_trixie: "{{ ansible_facts['distribution_version'] is version('13', '>=') }}"
-            _is_debian_modern: "{{ (_is_ubuntu and _is_noble) or (_is_debian and _is_trixie) }}"
-            _qemu_efi: "qemu-efi{{ '-aarch64' if (_is_debian_modern) else '' }}"
+            _arch_packages:
+              x86_64:
+                - qemu-system-x86
+                - ovmf
+              aarch64:
+                - qemu-system-arm
+                - qemu-efi-aarch64
 
         - name: Add user to libvirt group
           ansible.builtin.user:
