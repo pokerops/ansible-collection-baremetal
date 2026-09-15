@@ -4,6 +4,16 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: Collect sushy emulator logs
+      ansible.builtin.command: "docker logs --tail 40 {{ sushy_container_name }}"
+      register: _sushy_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Report sushy emulator logs
+      ansible.builtin.debug:
+        msg: "{{ (_sushy_logs.stdout_lines | default([])) + (_sushy_logs.stderr_lines | default([])) }}"
+
     - name: Stop sushy BMC emulator
       community.docker.docker_container:
         name: "{{ sushy_container_name }}"

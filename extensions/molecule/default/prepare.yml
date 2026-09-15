@@ -63,10 +63,33 @@
         - lookup('ansible.builtin.env', 'CI') | bool
       become: true
       block:
+        - name: Run qemu as the invoking user
+          ansible.builtin.lineinfile:
+            dest: /etc/libvirt/qemu.conf
+            regexp: "^#?user ="
+            line: 'user = "{{ _libvirt_user }}"'
+
+        - name: Restart the libvirt daemon
+          ansible.builtin.systemd_service:
+            name: libvirtd.service
+            state: restarted
+
         - name: Relax the libvirt socket mode
           ansible.builtin.file:
             path: /var/run/libvirt/libvirt-sock
             mode: "0666"
+
+        - name: Check for hardware virtualisation
+          ansible.builtin.stat:
+            path: /dev/kvm
+          register: _kvm_device
+
+        - name: Report hardware virtualisation support
+          ansible.builtin.debug:
+            msg: >-
+              /dev/kvm present={{ _kvm_device.stat.exists }}
+              mode={{ _kvm_device.stat.mode | default('n/a') }}
+              gid={{ _kvm_device.stat.gr_name | default('n/a') }}
 
     - name: Verify libvirt is reachable as the invoking user
       ansible.builtin.command: virsh -c qemu:///system uri
