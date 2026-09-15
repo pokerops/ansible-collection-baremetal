@@ -3,7 +3,7 @@
   hosts: localhost
   connection: local
   vars:
-    _libvirt_daemon_user: "{{ lookup('ansible.builtin.env', 'USER') }}"
+    _libvirt_user: "{{ lookup('ansible.builtin.env', 'USER') }}"
   tasks:
     - name: Verify host distribution support
       ansible.builtin.assert:
@@ -39,30 +39,20 @@
             _is_debian_modern: "{{ (_is_ubuntu and _is_noble) or (_is_debian and _is_trixie) }}"
             _qemu_efi: "qemu-efi{{ '-aarch64' if (_is_debian_modern) else '' }}"
 
+        - name: Add user to libvirt group
+          ansible.builtin.user:
+            name: "{{ _libvirt_user }}"
+            groups: "libvirt"
+            append: true
+
         - name: Query user groups
-          ansible.builtin.command: "groups {{ _libvirt_daemon_user }}"
+          ansible.builtin.command: "groups {{ _libvirt_user }}"
           register: _user_groups
           changed_when: false
 
         - name: Ensure user is in libvirt group
           ansible.builtin.assert:
-            that: _user_groups.stdout.split() | select('equalto', 'libvirt') | list | length > 0
-            msg: |
-              User '{{ _libvirt_daemon_user }}' is not in the 'libvirt' group. Please add the user to the group.
-              sudo usermod -a -G libvirt $USER
-
-        - name: Configure libvirt-qemu daemon user
-          ansible.builtin.lineinfile:
-            dest: /etc/libvirt/qemu.conf
-            regexp: "^#?user ="
-            line: "user = '{{ _libvirt_daemon_user }}'"
-          notify: debian_libvirt_restart
-
-  handlers:
-    - name: Restart libvirt daemon
-      ansible.builtin.systemd:
-        name: libvirtd
-        state: restarted
-        enabled: true
-      listen: debian_libvirt_restart
-      become: true
+            that: _groups | select('equalto', 'libvirt') | list | length > 0
+            fail_msg: "User '{{ _libvirt_user }}' is not in the 'libvirt' group"
+          vars:
+            _groups: "{{ _user_groups.stdout.split() }}"
