@@ -7,8 +7,20 @@
 - name: Rebuild the provisioning groups
   ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
 
+- name: Report the classification groups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Show which hosts each classification group holds
+      ansible.builtin.debug:
+        msg: >-
+          inventory_nodes={{ groups['_baremetal_inventory_nodes'] | default([]) }}
+          member={{ groups['_baremetal_talos_member'] | default([]) }}
+          install={{ groups['_baremetal_talos_install'] | default([]) }}
+
 - name: Verify
-  hosts: _baremetal_inventory_nodes
+  hosts: _baremetal_inventory_nodes:_baremetal_talos_member:_baremetal_talos_install
   connection: local
   gather_facts: false
   roles:
@@ -134,6 +146,59 @@
   roles:
     - pokerops.baremetal.baremetal
   tasks:
+    - name: Assert the cluster endpoint is the virtual address
+      ansible.builtin.assert:
+        that:
+          - _server == 'https://' ~ baremetal_talos_api_address ~ ':6443'
+        fail_msg: >-
+          The kubeconfig points at {{ _server }} rather than the virtual
+          address {{ baremetal_talos_api_address }}.
+      vars:
+        _server: >-
+          {{ (lookup('ansible.builtin.file', baremetal_kubeconfig)
+              | from_yaml).clusters[0].cluster.server }}
+      when: baremetal_talos_api_address | length > 0
+
+    - name: Reach the Talos API through the virtual address
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ baremetal_talos_api_address }}
+          --nodes {{ baremetal_talos_api_address }}
+      changed_when: false
+      when: baremetal_talos_api_address | length > 0
+
+    - name: Read the API server certificate
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          echo | openssl s_client -connect {{ baremetal_talos_api_address }}:6443 2>/dev/null
+          | openssl x509 -noout -ext subjectAltName
+        executable: /bin/bash
+      changed_when: false
+      register: _verify_api_certificate
+      when: baremetal_talos_api_address | length > 0
+
+    - name: Assert the certificate covers the API address and name
+      ansible.builtin.assert:
+        that:
+          - ('IP Address:' ~ baremetal_talos_api_address) in _sans
+          - baremetal_talos_api_fqdn | length == 0 or ('DNS:' ~ baremetal_talos_api_fqdn) in _sans
+        fail_msg: >-
+          The API server certificate carries {{ _sans | trim }}, which does not cover
+          {{ baremetal_talos_api_address }}
+          {{ ('and ' ~ baremetal_talos_api_fqdn) if baremetal_talos_api_fqdn else '' }}.
+      vars:
+        _sans: "{{ _verify_api_certificate.stdout | default('') }}"
+      when: baremetal_talos_api_address | length > 0
+
+    - name: Reach the Kubernetes API through the virtual address
+      ansible.builtin.wait_for:
+        host: "{{ baremetal_talos_api_address }}"
+        port: 6443
+        timeout: 60
+      when: baremetal_talos_api_address | length > 0
+
     - name: Assert the fleet was classified into a group to verify
       ansible.builtin.assert:
         that:

@@ -53,6 +53,9 @@ baremetal_talos_worker_group: talos_worker
 
 baremetal_talos_cluster_name: talos
 
+baremetal_talos_api_address: ""
+baremetal_talos_api_fqdn: ""
+
 baremetal_talos_release: ""
 
 baremetal_reinstall: false
