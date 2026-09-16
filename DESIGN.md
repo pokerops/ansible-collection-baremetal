@@ -50,7 +50,7 @@ a hardware fault rather than as a typo.
 
 ## Classification: install or member
 
-`playbooks/groups/talos.yml` runs before anything powers off and sorts the fleet
+`playbooks/talos/groups.yml` runs before anything powers off and sorts the fleet
 into dynamic groups. A machine that answers on port 50000 at its `ansible_host` is
 already provisioned and joins `_baremetal_talos_member`; everything else joins
 `_baremetal_talos_install`. Control plane and worker groups are derived the same way,
@@ -97,7 +97,7 @@ Kubernetes version its own binary defaults to, and a node refuses a Kubernetes n
 than its Talos supports, so the image has to follow `talosctl` rather than a moving
 upstream pointer. `baremetal_talos_release` is empty by default to mean exactly that;
 an explicit override needs a `talosctl` pinned to the same minor, which
-`playbooks/media/talos.yml` asserts rather than assumes. Nothing else catches this:
+`playbooks/talos/media.yml` asserts rather than assumes. Nothing else catches this:
 the Kubernetes version comes from talosctl and the Talos version from the image, and
 `talosctl validate` reads only the former, so it passes on a configuration no node in
 the fleet will accept.
@@ -122,7 +122,7 @@ rather than a download, which is what `baremetal_boot_image_timeout` waits on.
 
 ## Discovery
 
-`playbooks/discover/talos.yml` finds the machines and decides which of their links
+`playbooks/talos/discover.yml` finds the machines and decides which of their links
 and disks to use.
 
 **Facts and judgement are separated.** `pokerops.baremetal.talos_maintenance_facts`
@@ -225,6 +225,36 @@ which from the outside looks like a network fault.
 maintenance mode at an address DHCP gave it, and this is the last thing that uses
 that address: applying the configuration brings up the bond, moves the machine to its
 static address and takes the DHCP one away.
+
+## Resolvers and time servers
+
+`baremetal_dns_servers`, `baremetal_search_domains` and `baremetal_ntp_servers` are
+empty by default, and each stanza is emitted only when its list is non-empty. Empty
+means "defer to Talos", which ships its own defaults -- `1.1.1.1` and `8.8.8.8` for
+resolvers, `time.cloudflare.com` for time -- so writing an empty list would replace
+working defaults with nothing. They carry no `talos_` prefix because neither setting
+is Talos-specific and a second OS profile needs the same two knobs.
+
+The settings reach a machine by two different routes, because a machine that is
+being installed and a machine already running a cluster cannot be treated alike.
+
+**At install time** they are part of the generated machine configuration, emitted by
+`seed/talos.yml` into the same patch that carries the bond and the install disk.
+Nothing extra happens: the node comes up already holding them.
+
+**On a running cluster** `network/talos.yml` converges them. It targets
+`_baremetal_talos_member`, so on a first install it matches nothing and on a re-run
+it matches the whole fleet. It reads what each node actually reports through
+`talosctl get resolvers` and `talosctl get timeservers`, compares that against what
+is configured, and patches only the nodes that differ -- which is what keeps a
+re-run a no-op rather than an unconditional write. The patch is applied with
+`--mode no-reboot`, so a setting that would require a reboot fails loudly instead of
+restarting a production node as a side effect of a configuration run.
+
+Verification asks the node rather than the configuration. `talosctl get resolvers`
+returns the effective state after Talos merges its configuration layers, so the
+assertion catches a patch that was rejected or never applied, where comparing
+against the rendered file would only echo the inventory back.
 
 ## Bonding and addressing
 
