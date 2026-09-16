@@ -39,6 +39,10 @@ baremetal_boot_image_timeout: 600
 
 baremetal_bond_members: []
 
+baremetal_dns_servers: []
+baremetal_search_domains: []
+baremetal_ntp_servers: []
+
 baremetal_bond_mode: "802.3ad"
 baremetal_bond_hash_policy: layer3+4
 

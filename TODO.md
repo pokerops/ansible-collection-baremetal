@@ -33,17 +33,8 @@ steps.
 - Verify the switch-ordering failure mode on one machine before trusting it across a
   fleet: applying an 802.3ad bond to a host whose ports are not yet in a
   port-channel should leave it with no aggregator and no connectivity.
-
-## LLDP: the switch side
-
-`siderolabs/lldpd` is in the schematic and running, so the machines already
-advertise themselves. What is left is a playbook per switch OS family to read the
-neighbour table and configure ports from it.
-
-Deliberately deferred to the bare-metal tests: nothing here can be written against a
-libvirt bridge, which speaks no LLDP and has no neighbour table to read. The switch
-side also needs `configure lldp portidsubtype ifname`, without which the neighbour
-table repeats MAC addresses instead of naming interfaces.
+- Create playbooks per switch OS family to read the
+  neighbour table using LLPD and configure ports from it.
 
 ## Smaller items
 
@@ -53,8 +44,6 @@ table repeats MAC addresses instead of naming interfaces.
   `failed_when: false`, on the grounds that the insert following it is what actually
   needs a free slot and reports plainly when there is none. If a locked eject ever
   does strand a slot, that reasoning is what to revisit.
-
-## NTP configuration
 
 ## BGP configuration
 

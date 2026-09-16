@@ -50,6 +50,18 @@
         content: |
           machine:
             network:
+          {% if baremetal_dns_servers %}
+              nameservers:
+          {% for server in baremetal_dns_servers %}
+                - {{ server }}
+          {% endfor %}
+          {% endif %}
+          {% if baremetal_search_domains %}
+              searchDomains:
+          {% for domain in baremetal_search_domains %}
+                - {{ domain }}
+          {% endfor %}
+          {% endif %}
               interfaces:
                 - interface: bond0
                   bond:
@@ -75,6 +87,13 @@
           {% endfor %}
           {% else %}
               disk: {{ baremetal_install_disk }}
+          {% endif %}
+          {% if baremetal_ntp_servers %}
+            time:
+              servers:
+          {% for server in baremetal_ntp_servers %}
+                - {{ server }}
+          {% endfor %}
           {% endif %}
           ---
           apiVersion: v1alpha1

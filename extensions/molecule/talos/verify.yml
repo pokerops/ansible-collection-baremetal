@@ -5,10 +5,10 @@
   gather_facts: true
 
 - name: Rebuild the provisioning groups
-  ansible.builtin.import_playbook: pokerops.baremetal.groups.talos
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
 
 - name: Verify
-  hosts: _baremetal_nodes
+  hosts: _baremetal_inventory_nodes
   connection: local
   gather_facts: false
   roles:
@@ -79,6 +79,54 @@
              | selectattr('address', 'equalto', ansible_host ~ '/' ~ baremetal_network_prefix)
              | map(attribute='linkName') | list }}
 
+    - name: Read the node's resolvers
+      ansible.builtin.command:
+        cmd: >-
+          talosctl get resolvers --output json
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _verify_resolvers
+      when: baremetal_dns_servers | length > 0
+
+    - name: Assert the node resolves through the configured servers
+      ansible.builtin.assert:
+        that:
+          - _reported == baremetal_dns_servers
+        fail_msg: >-
+          {{ inventory_hostname }} resolves through
+          {{ _reported | join(', ') | default('nothing', true) }} rather than
+          {{ baremetal_dns_servers | join(', ') }}.
+      vars:
+        _reported: >-
+          {{ (_verify_resolvers.stdout | from_json).spec.dnsServers | default([]) }}
+      when: baremetal_dns_servers | length > 0
+
+    - name: Read the node's time servers
+      ansible.builtin.command:
+        cmd: >-
+          talosctl get timeservers --output json
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _verify_timeservers
+      when: baremetal_ntp_servers | length > 0
+
+    - name: Assert the node keeps time against the configured servers
+      ansible.builtin.assert:
+        that:
+          - _reported == baremetal_ntp_servers
+        fail_msg: >-
+          {{ inventory_hostname }} keeps time against
+          {{ _reported | join(', ') | default('nothing', true) }} rather than
+          {{ baremetal_ntp_servers | join(', ') }}.
+      vars:
+        _reported: >-
+          {{ (_verify_timeservers.stdout | from_json).spec.timeServers | default([]) }}
+      when: baremetal_ntp_servers | length > 0
+
 - name: Verify cluster membership
   hosts: localhost
   connection: local
@@ -86,6 +134,14 @@
   roles:
     - pokerops.baremetal.baremetal
   tasks:
+    - name: Assert the fleet was classified into a group to verify
+      ansible.builtin.assert:
+        that:
+          - groups['_baremetal_inventory_nodes'] | default([]) | length > 0
+        fail_msg: >-
+          No hosts landed in _baremetal_inventory_nodes, so every per-node
+          assertion above matched nothing and passed without running.
+
     - name: Read the cluster's nodes
       kubernetes.core.k8s_info:
         kind: Node

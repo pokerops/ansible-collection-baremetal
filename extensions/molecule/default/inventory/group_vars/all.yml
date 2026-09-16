@@ -70,3 +70,12 @@ baremetal_media_server_address: "{{ baremetal_network_gateway }}"
 baremetal_bond_mode: active-backup
 baremetal_talos_config_directory: "{{ project_directory }}/.ansible/talos"
 baremetal_install_disk_require_ssd: false
+
+baremetal_dns_servers:
+  - 9.9.9.9
+  - 8.8.4.4
+baremetal_ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+  - 2.pool.ntp.org
+  - 3.pool.ntp.org

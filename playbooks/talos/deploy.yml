@@ -1,6 +1,6 @@
 ---
 - name: Group installation hosts
-  ansible.builtin.import_playbook: pokerops.baremetal.groups.talos
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
 
 - name: Validate collection parameters
   ansible.builtin.import_playbook: pokerops.baremetal.validate
@@ -9,20 +9,23 @@
   ansible.builtin.import_playbook: pokerops.baremetal.media.start
 
 - name: Fetch Talos volumes
-  ansible.builtin.import_playbook: pokerops.baremetal.media.talos
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.media
 
 - name: Boot from virtual media
   ansible.builtin.import_playbook: pokerops.baremetal.boot
 
 - name: Discover the provisioning interfaces
-  ansible.builtin.import_playbook: pokerops.baremetal.discover.talos
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.discover
 
 - name: Configure the machines
-  ansible.builtin.import_playbook: pokerops.baremetal.seed.talos
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.seed
 
 - name: Bootstrap the cluster
-  ansible.builtin.import_playbook: pokerops.baremetal.bootstrap.talos
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.bootstrap
   when: talos_bootstrap | default(True) | bool
+
+- name: Converge node networking
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.network
 
 - name: Stop media server
   ansible.builtin.import_playbook: pokerops.baremetal.media.stop

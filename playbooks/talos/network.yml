@@ -1,0 +1,89 @@
+---
+- name: Converge node networking settings
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    _baremetal_network_patch: >-
+      {{ baremetal_talos_config_directory }}/{{ inventory_hostname }}.network.patch.yaml
+  tasks:
+    - name: Read the resolvers the node is using
+      ansible.builtin.command:
+        cmd: >-
+          talosctl get resolvers --output json
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _baremetal_resolvers
+
+    - name: Read the time servers the node is using
+      ansible.builtin.command:
+        cmd: >-
+          talosctl get timeservers --output json
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _baremetal_timeservers
+
+    - name: Record the settings the node reports
+      ansible.builtin.set_fact:
+        _baremetal_node_dns: "{{ _resolver_spec.dnsServers | default([]) }}"
+        _baremetal_node_search: "{{ _resolver_spec.searchDomains | default([]) }}"
+        _baremetal_node_ntp: "{{ _timeserver_spec.timeServers | default([]) }}"
+      vars:
+        _resolver_spec: >-
+          {{ (_baremetal_resolvers.stdout | from_json).spec }}
+        _timeserver_spec: >-
+          {{ (_baremetal_timeservers.stdout | from_json).spec }}
+
+    - name: Converge the settings that differ
+      when: _baremetal_network_drift | bool
+      vars:
+        _baremetal_network_drift: >-
+          {{ (baremetal_dns_servers | length > 0 and _baremetal_node_dns != baremetal_dns_servers)
+             or (baremetal_search_domains | length > 0 and _baremetal_node_search != baremetal_search_domains)
+             or (baremetal_ntp_servers | length > 0 and _baremetal_node_ntp != baremetal_ntp_servers) }}
+      block:
+        - name: Render the networking patch
+          ansible.builtin.copy:
+            dest: "{{ _baremetal_network_patch }}"
+            mode: "0644"
+            content: |
+              machine:
+              {% if baremetal_dns_servers or baremetal_search_domains %}
+                network:
+              {% if baremetal_dns_servers %}
+                  nameservers:
+              {% for server in baremetal_dns_servers %}
+                    - {{ server }}
+              {% endfor %}
+              {% endif %}
+              {% if baremetal_search_domains %}
+                  searchDomains:
+              {% for domain in baremetal_search_domains %}
+                    - {{ domain }}
+              {% endfor %}
+              {% endif %}
+              {% endif %}
+              {% if baremetal_ntp_servers %}
+                time:
+                  servers:
+              {% for server in baremetal_ntp_servers %}
+                    - {{ server }}
+              {% endfor %}
+              {% endif %}
+
+        - name: Apply the networking patch
+          ansible.builtin.command:
+            cmd: >-
+              talosctl patch machineconfig
+              --patch @{{ _baremetal_network_patch }}
+              --mode no-reboot
+              --talosconfig {{ baremetal_talosconfig }}
+              --endpoints {{ ansible_host }}
+              --nodes {{ ansible_host }}
+          changed_when: true
