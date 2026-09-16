@@ -7,8 +7,20 @@
 - name: Rebuild the provisioning groups
   ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
 
+- name: Report the classification groups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Show which hosts each classification group holds
+      ansible.builtin.debug:
+        msg: >-
+          inventory_nodes={{ groups['_baremetal_inventory_nodes'] | default([]) }}
+          member={{ groups['_baremetal_talos_member'] | default([]) }}
+          install={{ groups['_baremetal_talos_install'] | default([]) }}
+
 - name: Verify
-  hosts: _baremetal_inventory_nodes
+  hosts: _baremetal_inventory_nodes:_baremetal_talos_member:_baremetal_talos_install
   connection: local
   gather_facts: false
   roles:
