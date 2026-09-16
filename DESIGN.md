@@ -270,6 +270,41 @@ The molecule scenario overrides the mode to `active-backup`: a libvirt bridge sp
 no LACP, so an 802.3ad bond would never find a partner, never aggregate, and leave
 the machine unreachable.
 
+## The control plane address
+
+`baremetal_talos_api_address` is empty by default. Set it, and three things follow from that
+one value: the address becomes the cluster endpoint passed to `talosctl gen config`,
+it is added to the API server certificate's subject alternative names, and it is
+emitted as `vip.ip` on bond0 in every control plane's machine configuration.
+
+The cluster endpoint matters more than it looks. `talosctl kubeconfig` takes the
+server URL from `cluster.controlPlane.endpoint`, so without a virtual address the
+generated kubeconfig names whichever control plane happened to render the
+configuration -- administrative access then depends on that one machine being up,
+even though the cluster survives losing it. Pointing the endpoint at the virtual
+address fixes the kubeconfig and the nodes' own join address together.
+
+Talos implements the address itself: the control planes elect a holder through etcd
+and move it, with no external component and no switch configuration. The cost is
+that it is a layer 2 mechanism, so every control plane has to share a broadcast
+domain. A routed control plane needs BGP instead, and that is a different design --
+one where whatever advertises the address has to exist before the API it fronts is
+reachable.
+
+Workers never carry it. The stanza is emitted only for control planes, because the
+address is owned by the etcd quorum.
+
+`baremetal_talos_api_fqdn` adds the name administrators type to the same
+certificate. It is deliberately not the cluster endpoint: that endpoint is what
+nodes use to reach the API when joining and when recovering, and resolving it
+through DNS would make cluster formation depend on the thing most likely to be
+broken during a recovery. Nodes use the address; the certificate covers both, so
+people and tooling can use the name.
+
+Both are baked at generation time: the certificate is minted once by
+`talosctl gen config`, and the configuration directory is guarded by `creates`, so
+changing either on a built cluster means reissuing rather than editing.
+
 ## Cluster bootstrap
 
 etcd is bootstrapped exactly once, from a single control plane node. Running it on

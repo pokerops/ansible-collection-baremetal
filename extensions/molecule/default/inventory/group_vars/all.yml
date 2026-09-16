@@ -64,6 +64,8 @@ baremetal_bmc_password: "{{ sushy_password }}"
 
 baremetal_network_prefix: 24
 baremetal_network_gateway: 172.16.31.1
+baremetal_talos_api_address: 172.16.31.10
+baremetal_talos_api_fqdn: talos.molecule.test
 
 baremetal_media_server_address: "{{ baremetal_network_gateway }}"
 
