@@ -1,0 +1,81 @@
+---
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Converge the cluster's Kubernetes version
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the Kubernetes version the toolchain ships
+      ansible.builtin.command:
+        cmd: talosctl image k8s-bundle
+      changed_when: false
+      register: _baremetal_k8s_bundle
+      when: baremetal_talos_k8s_version | length == 0
+
+    - name: Record the Kubernetes version the cluster should run
+      ansible.builtin.set_fact:
+        _baremetal_k8s_target: "{{ baremetal_talos_k8s_version | default(_shipped, true) | regex_replace('^v', '') }}"
+        _baremetal_k8s_requested: "{{ baremetal_talos_k8s_version | length > 0 }}"
+      vars:
+        _shipped: >-
+          {{ (_baremetal_k8s_bundle.stdout | default('')).split('kube-apiserver:v') | last
+             | split() | first | default('') }}
+
+    - name: Record the node to drive the upgrade through
+      ansible.builtin.set_fact:
+        _baremetal_k8s_node: >-
+          {{ baremetal_talos_api_address if baremetal_talos_api_address | length > 0
+             else (hostvars[_control | first].ansible_host if _control | length > 0 else '') }}
+      vars:
+        _control: "{{ groups['_baremetal_talos_member_control'] | default([]) }}"
+
+    - name: Look for the cluster's kubeconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_kubeconfig_file
+
+    - name: Converge the version the cluster is running
+      when: _baremetal_kubeconfig_file.stat.exists
+      block:
+        - name: Read the cluster's nodes
+          kubernetes.core.k8s_info:
+            kind: Node
+            kubeconfig: "{{ baremetal_kubeconfig }}"
+          register: _baremetal_k8s_nodes
+
+        - name: Record the Kubernetes version the cluster runs
+          ansible.builtin.set_fact:
+            _baremetal_k8s_running: >-
+              {{ _baremetal_k8s_nodes.resources | default([])
+                 | map(attribute='status.nodeInfo.kubeletVersion')
+                 | map('regex_replace', '^v', '') | unique | list }}
+
+        - name: Assert the requested version would not move Kubernetes backwards
+          ansible.builtin.assert:
+            that:
+              - _ahead | length == 0
+            fail_msg: >-
+              The cluster runs Kubernetes {{ _ahead | join(', ') }} and
+              baremetal_talos_k8s_version asks for {{ _baremetal_k8s_target }}.
+              Kubernetes does not support downgrades.
+          vars:
+            _ahead: "{{ _baremetal_k8s_running | select('version', _baremetal_k8s_target, '>') | list }}"
+          when: _baremetal_k8s_requested | bool
+
+        - name: Upgrade the cluster to the target Kubernetes version
+          ansible.builtin.command:
+            cmd: >-
+              talosctl upgrade-k8s
+              --to {{ _baremetal_k8s_target }}
+              --talosconfig {{ baremetal_talosconfig }}
+              --nodes {{ _baremetal_k8s_node }}
+          changed_when: true
+          when:
+            - _behind | length > 0
+            - _baremetal_k8s_node | length > 0
+          vars:
+            _behind: "{{ _baremetal_k8s_running | select('version', _baremetal_k8s_target, '<') | list }}"

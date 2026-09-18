@@ -13,19 +13,31 @@
 
 - name: Boot from virtual media
   ansible.builtin.import_playbook: pokerops.baremetal.boot
+  when: baremetal_talos_boot | bool
 
 - name: Discover the provisioning interfaces
   ansible.builtin.import_playbook: pokerops.baremetal.talos.discover
+  when: baremetal_talos_configure | bool
 
 - name: Configure the machines
   ansible.builtin.import_playbook: pokerops.baremetal.talos.seed
+  when: baremetal_talos_configure | bool
 
 - name: Bootstrap the cluster
   ansible.builtin.import_playbook: pokerops.baremetal.talos.bootstrap
-  when: talos_bootstrap | default(True) | bool
+  when: baremetal_talos_configure | bool
 
 - name: Converge node networking
   ansible.builtin.import_playbook: pokerops.baremetal.talos.network
+  when: baremetal_talos_configure | bool
+
+- name: Converge the Talos release
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.upgrade
+  when: baremetal_talos_configure | bool
+
+- name: Converge the Kubernetes version
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.kubernetes
+  when: baremetal_talos_configure | bool
 
 - name: Stop media server
   ansible.builtin.import_playbook: pokerops.baremetal.media.stop

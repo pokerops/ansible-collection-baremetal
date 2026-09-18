@@ -38,7 +38,9 @@ that is true of the fleet rather than of a machine.
 is declared there, so that one file documents what can be set and what it defaults
 to.
 
-Nothing is referenced without a default. An undefined name in `hosts:` is not an
+Nothing is referenced without a default. Kubernetes settings are named
+`baremetal_talos_k8s_*`, so that the knobs belonging to the cluster running on
+Talos are distinguishable at a glance from the knobs belonging to Talos itself. An undefined name in `hosts:` is not an
 empty match that skips a play quietly -- it aborts the run with "Error processing
 keyword 'hosts'".
 
@@ -324,6 +326,53 @@ Waiting on machines that are installing and rebooting cannot key on the API
 answering, because Talos serves the API in maintenance mode too. Readiness is a call
 made with the cluster's own credentials, retried while the machine installs and comes
 back.
+
+## Upgrades
+
+`baremetal_talos_release` is the release the fleet runs, and `talos/upgrade.yml`
+converges members onto it as part of deploy. An upgrade is therefore the same
+gesture as any other change: declare the new value, run deploy. Nodes already on
+the release are skipped, so the playbook is re-runnable and a partially completed
+roll can be resumed.
+
+Empty means "the release the project's toolchain provides". That is deliberately
+the same rule the install path uses, so a machine added next month gets the
+release its neighbours are already on rather than whatever is newest -- if the two
+paths disagreed, a fleet would drift apart as machines were added. The cost is
+that refreshing the devbox lock changes what the fleet converges to, which is why
+production inventories should pin the release rather than track the toolchain.
+
+**Unsupported jumps are refused before anything is touched.** Talos upgrades one
+minor version at a time, so a target more than one minor ahead of any member is
+rejected; patch jumps within a minor are unrestricted, because an install writes a
+whole OS image rather than applying increments, so intermediate patches contribute
+nothing.
+
+**Downgrades are refused the same way.** The playbook reads every
+member's release first and fails if any of them is newer than the target, naming
+the offenders. Talos does not support downgrades. Both checks are pre-flight
+rather than per node on purpose: refusing halfway through a roll would leave the
+fleet split across releases, which is the state the whole design is trying to
+avoid.
+
+The order is control planes first, one at a time, then workers, one at a time --
+`serial: 1` on each play. etcd tolerates losing one member of three, and
+`talosctl upgrade` cordons and drains a node before rebooting it, so its workloads
+move before it goes away. Between nodes the playbook waits for the node to report
+the target release, to rejoin Kubernetes as Ready, and for every pod to be back in
+a healthy phase. The wait for workloads matters as much as the wait for the node:
+a node can be Ready while the deployments that moved off it are still
+rescheduling, and rebooting the next machine then is how a rolling upgrade becomes
+an outage.
+
+The image is the Factory installer for the target release built from the same
+schematic the cluster was installed with, so kernel arguments and system
+extensions survive the upgrade.
+
+The `upgrade` molecule scenario builds a cluster with the release pinned to one
+version, verifies it, re-runs deploy with the release pinned one version newer,
+and verifies again -- the same gesture an operator makes, with health asserted on
+both releases.
 
 ## Verification
 

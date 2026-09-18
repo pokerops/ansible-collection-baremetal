@@ -1,0 +1,117 @@
+---
+- name: Gather controller facts
+  hosts: localhost
+  gather_facts: true
+
+- name: Rebuild the provisioning groups
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Verify the release every node is running
+  hosts: _baremetal_inventory_nodes:_baremetal_talos_member:_baremetal_talos_install
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the release the node is running
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version --short
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _verify_release
+
+    - name: Record the release the node is running
+      ansible.builtin.set_fact:
+        _verify_node_release: >-
+          {{ (_verify_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}
+
+- name: Verify the cluster is healthy on that release
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Assert the fleet was classified into a group to verify
+      ansible.builtin.assert:
+        that:
+          - groups['_baremetal_inventory_nodes'] | default([]) | length > 0
+        fail_msg: >-
+          No hosts landed in _baremetal_inventory_nodes, so the per-node checks
+          matched nothing and passed without running.
+
+    - name: Assert every node runs the same release
+      ansible.builtin.assert:
+        that:
+          - _releases | length == 1
+        fail_msg: >-
+          The fleet is split across releases {{ _releases | join(', ') }}. An upgrade
+          left the cluster in a mixed state.
+      vars:
+        _releases: >-
+          {{ groups['_baremetal_inventory_nodes']
+             | map('extract', hostvars, '_verify_node_release') | unique | list }}
+
+    - name: Read the cluster's nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _verify_nodes
+
+    - name: Assert every node is Ready
+      ansible.builtin.assert:
+        that:
+          - _ready == ['True']
+        fail_msg: >-
+          {{ item.metadata.name }} is not Ready
+          (Ready={{ _ready | join(',') | default('absent', true) }}).
+      loop: "{{ _verify_nodes.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      vars:
+        _ready: >-
+          {{ item.status.conditions | selectattr('type', 'equalto', 'Ready')
+             | map(attribute='status') | list }}
+
+    - name: Read every pod in the cluster
+      kubernetes.core.k8s_info:
+        kind: Pod
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _verify_pods
+
+    - name: Assert no pod is stuck outside a healthy phase
+      ansible.builtin.assert:
+        that:
+          - _unhealthy | length == 0
+        fail_msg: "Pods not Running or Succeeded: {{ _unhealthy | join(', ') }}."
+      vars:
+        _unhealthy: >-
+          {{ _verify_pods.resources
+             | rejectattr('status.phase', 'in', ['Running', 'Succeeded'])
+             | map(attribute='metadata.name') | list }}
+
+    - name: Assert every running pod has all its containers ready
+      ansible.builtin.assert:
+        that:
+          - _unready == []
+        fail_msg: >-
+          {{ item.metadata.name }} has containers that are not ready
+          ({{ _unready | join(', ') }}).
+      loop: >-
+        {{ _verify_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list }}
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      vars:
+        _unready: >-
+          {{ item.status.containerStatuses | default([])
+             | rejectattr('ready') | map(attribute='name') | list }}
+
+    - name: Reach the Kubernetes API through the cluster address
+      ansible.builtin.wait_for:
+        host: "{{ baremetal_talos_api_address }}"
+        port: 6443
+        timeout: 60
+      when: baremetal_talos_api_address | length > 0

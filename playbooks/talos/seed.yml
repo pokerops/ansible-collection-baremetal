@@ -16,7 +16,7 @@
 
     - name: Generate cluster configuration
       ansible.builtin.command:
-        cmd: "talosctl gen config {{ _cluster }} {{ _url }} {{ _sans }} --output {{ _output }}"
+        cmd: "talosctl gen config {{ _cluster }} {{ _url }} {{ _sans }} {{ _kubernetes }} --output {{ _output }}"
         creates: "{{ baremetal_talosconfig }}"
       vars:
         _cluster: "{{ baremetal_talos_cluster_name }}"
@@ -26,6 +26,9 @@
           {{ [baremetal_talos_api_address, baremetal_talos_api_fqdn] | select | list }}
         _sans: >-
           {{ '--additional-sans ' + (_all_sans | join(',')) if _all_sans | length > 0 else '' }}
+        _kubernetes: >-
+          {{ '--kubernetes-version ' + baremetal_talos_k8s_version
+             if baremetal_talos_k8s_version | length > 0 else '' }}
         _output: "{{ baremetal_talos_config_directory }}"
 
     - name: Record the control plane endpoints in the talosconfig

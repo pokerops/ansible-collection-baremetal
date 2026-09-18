@@ -1,0 +1,102 @@
+---
+- name: Converge the fleet onto the newer release
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
+  vars:
+    baremetal_talos_release: v1.13.10
+
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Attempt to move the fleet backwards
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Run the upgrade pinned to an older release
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook {{ _inventories }}
+          --extra-vars baremetal_talos_release={{ _downgrade_release }}
+          pokerops.baremetal.talos.upgrade
+      register: _baremetal_downgrade
+      changed_when: false
+      failed_when: _baremetal_downgrade.rc == 0
+      vars:
+        _downgrade_release: v1.13.9
+        _inventories: >-
+          {{ ansible_inventory_sources | map('regex_replace', '^', '--inventory ') | join(' ') }}
+
+    - name: Assert the run stopped at the guard rather than somewhere else
+      ansible.builtin.assert:
+        that:
+          - "'Assert no member runs a release newer than the target' in _output"
+          - "'Install the target release' not in _output"
+        fail_msg: >-
+          The downgrade run failed, but not at the guard: its output carries no
+          refusal, so the failure came from somewhere else.
+      vars:
+        _output: "{{ _baremetal_downgrade.stdout | default('') }}"
+
+- name: Confirm Kubernetes converged to the version the toolchain ships
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the Kubernetes version the toolchain ships
+      ansible.builtin.command:
+        cmd: talosctl image k8s-bundle
+      changed_when: false
+      register: _verify_k8s_bundle
+
+    - name: Read the cluster's nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _verify_k8s_nodes
+
+    - name: Assert every node runs the Kubernetes version the toolchain ships
+      ansible.builtin.assert:
+        that:
+          - _running == [_shipped]
+        fail_msg: >-
+          The cluster runs Kubernetes {{ _running | join(', ') }} rather than
+          {{ _shipped }}; the convergence did not upgrade it.
+      vars:
+        _shipped: >-
+          {{ (_verify_k8s_bundle.stdout.split('kube-apiserver:v') | last).split() | first }}
+        _running: >-
+          {{ _verify_k8s_nodes.resources | map(attribute='status.nodeInfo.kubeletVersion')
+             | map('regex_replace', '^v', '') | unique | list }}
+
+- name: Confirm the fleet did not move backwards
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the release the node is running
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version --short
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _baremetal_release_after_refusal
+
+    - name: Assert the node still runs the newer release
+      ansible.builtin.assert:
+        that:
+          - _reported == hostvars['localhost']._baremetal_target_release
+        fail_msg: >-
+          {{ inventory_hostname }} runs {{ _reported }} rather than
+          {{ hostvars['localhost']._baremetal_target_release }} after a refused
+          downgrade; the guard let some of the roll through.
+      vars:
+        _reported: >-
+          {{ (_baremetal_release_after_refusal.stdout.split('Tag:') | last).split() | first | default('unknown') }}

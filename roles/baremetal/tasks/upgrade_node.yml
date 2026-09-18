@@ -1,0 +1,70 @@
+---
+- name: Read the release the node is running
+  ansible.builtin.command:
+    cmd: >-
+      talosctl version --short
+      --talosconfig {{ baremetal_talosconfig }}
+      --endpoints {{ ansible_host }}
+      --nodes {{ ansible_host }}
+  changed_when: false
+  register: _baremetal_node_release
+
+- name: Upgrade the node
+  when: _baremetal_current_release != hostvars['localhost']._baremetal_target_release
+  vars:
+    _baremetal_current_release: >-
+      {{ (_baremetal_node_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}
+  block:
+    - name: Install the target release
+      ansible.builtin.command:
+        cmd: >-
+          talosctl upgrade
+          --image {{ hostvars['localhost']._baremetal_upgrade_image }}
+          --talosconfig {{ baremetal_talosconfig }}
+          --nodes {{ ansible_host }}
+          --timeout {{ baremetal_talos_upgrade_timeout }}
+      changed_when: true
+
+    - name: Wait for the node to report the target release
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version --short
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _baremetal_upgraded_release
+      until: >-
+        ((_baremetal_upgraded_release.stdout.split('Tag:') | last).split() | first | default('unknown')) == hostvars['localhost']._baremetal_target_release
+      retries: "{{ baremetal_talos_ready_retries }}"
+      delay: "{{ baremetal_talos_ready_delay }}"
+
+    - name: Wait for the node to rejoin the cluster
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      delegate_to: localhost
+      register: _baremetal_node_readiness
+      until: >-
+        (_baremetal_node_readiness.resources | default([]) | length > 0)
+        and (_baremetal_node_readiness.resources[0].status.conditions
+             | selectattr('type', 'equalto', 'Ready')
+             | map(attribute='status') | first | default('False')) == 'True'
+      retries: "{{ baremetal_talos_ready_retries }}"
+      delay: "{{ baremetal_talos_ready_delay }}"
+
+    - name: Wait for every workload to settle before moving on
+      kubernetes.core.k8s_info:
+        kind: Pod
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      delegate_to: localhost
+      register: _baremetal_pods
+      until: _baremetal_unsettled | length == 0
+      retries: "{{ baremetal_talos_ready_retries }}"
+      delay: "{{ baremetal_talos_ready_delay }}"
+      vars:
+        _baremetal_unsettled: >-
+          {{ _baremetal_pods.resources | default([])
+             | rejectattr('status.phase', 'in', ['Running', 'Succeeded'])
+             | map(attribute='metadata.name') | list }}
