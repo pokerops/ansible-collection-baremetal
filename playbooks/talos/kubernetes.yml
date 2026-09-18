@@ -25,6 +25,14 @@
           {{ (_baremetal_k8s_bundle.stdout | default('')).split('kube-apiserver:v') | last
              | split() | first | default('') }}
 
+    - name: Record the node to drive the upgrade through
+      ansible.builtin.set_fact:
+        _baremetal_k8s_node: >-
+          {{ baremetal_talos_api_address if baremetal_talos_api_address | length > 0
+             else (hostvars[_control | first].ansible_host if _control | length > 0 else '') }}
+      vars:
+        _control: "{{ groups['_baremetal_talos_member_control'] | default([]) }}"
+
     - name: Look for the cluster's kubeconfig
       ansible.builtin.stat:
         path: "{{ baremetal_kubeconfig }}"
@@ -64,7 +72,10 @@
               talosctl upgrade-k8s
               --to {{ _baremetal_k8s_target }}
               --talosconfig {{ baremetal_talosconfig }}
+              --nodes {{ _baremetal_k8s_node }}
           changed_when: true
-          when: _behind | length > 0
+          when:
+            - _behind | length > 0
+            - _baremetal_k8s_node | length > 0
           vars:
             _behind: "{{ _baremetal_k8s_running | select('version', _baremetal_k8s_target, '<') | list }}"

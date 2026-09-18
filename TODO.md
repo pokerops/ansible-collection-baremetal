@@ -60,8 +60,6 @@ the toolchain's minor line. What is not covered yet:
   image minor matches the local `talosctl`. The downgrade refusal is exercised --
   the scenario runs the upgrade pinned to an older release, requires it to fail at
   the guard, and asserts the fleet did not move.
-- **Kubernetes version upgrades.** `talosctl upgrade-k8s` is a separate operation
-  from the Talos upgrade and is not wired up.
 
 ## Cluster add worker support/scenario
 
