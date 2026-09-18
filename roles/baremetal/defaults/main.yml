@@ -57,8 +57,11 @@ baremetal_talos_api_address: ""
 baremetal_talos_api_fqdn: ""
 
 baremetal_talos_release: ""
+baremetal_talos_k8s_version: ""
 
 baremetal_reinstall: false
+baremetal_talos_boot: true
+baremetal_talos_configure: true
 
 baremetal_talos_install_disk: ""
 
@@ -79,3 +82,5 @@ baremetal_talos_ready_delay: 10
 baremetal_talos_bootstrap_retries: 10
 baremetal_talos_bootstrap_delay: 15
 baremetal_talos_health_timeout: 15m
+
+baremetal_talos_upgrade_timeout: 30m

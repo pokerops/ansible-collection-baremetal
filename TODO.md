@@ -47,7 +47,21 @@ steps.
 
 ## BGP configuration
 
-## Upgrade scenario
+## Upgrade coverage
+
+`pokerops.baremetal.talos.upgrade` rolls a release through the fleet and the
+`upgrade` molecule scenario exercises it between the two most recent releases on
+the toolchain's minor line. What is not covered yet:
+
+- **The minor-jump refusal is guarded but not exercised by a scenario.** A target
+  more than one minor ahead of any member is refused and single-minor jumps are
+  allowed, but the scenario only runs a patch hop: staging a minor jump means
+  bumping the toolchain in the same change, since `media/talos.yml` asserts the
+  image minor matches the local `talosctl`. The downgrade refusal is exercised --
+  the scenario runs the upgrade pinned to an older release, requires it to fail at
+  the guard, and asserts the fleet did not move.
+- **Kubernetes version upgrades.** `talosctl upgrade-k8s` is a separate operation
+  from the Talos upgrade and is not wired up.
 
 ## Cluster add worker support/scenario
 

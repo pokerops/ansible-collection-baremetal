@@ -1,0 +1,168 @@
+---
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Resolve the release the fleet should run
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the Talos toolchain version
+      ansible.builtin.command:
+        cmd: talosctl version --client --short
+      changed_when: false
+      register: _baremetal_toolchain
+
+    - name: Record the release the fleet should run
+      ansible.builtin.set_fact:
+        _baremetal_target_release: "{{ baremetal_talos_release | default(_toolchain, true) }}"
+      vars:
+        _toolchain: >-
+          {{ (_baremetal_toolchain.stdout.split('Talos') | last).split() | first | default('') }}
+
+    - name: Register the Talos image schematic
+      ansible.builtin.uri:
+        url: https://factory.talos.dev/schematics
+        method: POST
+        body: |
+          customization:
+            extraKernelArgs:
+              - console=ttyS0
+            systemExtensions:
+              officialExtensions:
+                - siderolabs/lldpd
+        status_code: [200, 201]
+      register: _baremetal_upgrade_schematic
+      until: _baremetal_upgrade_schematic is not failed
+      retries: "{{ baremetal_media_retries }}"
+      delay: "{{ baremetal_media_retry_delay }}"
+
+    - name: Record the upgrade image
+      ansible.builtin.set_fact:
+        _baremetal_upgrade_image: >-
+          factory.talos.dev/installer/{{ _baremetal_upgrade_schematic.json.id }}:{{ _baremetal_target_release }}
+
+- name: Read the release every member is running
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the release the node is running
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version --short
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _baremetal_member_release
+      failed_when: >-
+        _baremetal_member_release.rc != 0 or 'Tag:' not in _baremetal_member_release.stdout
+
+    - name: Record the release the node is running
+      ansible.builtin.set_fact:
+        _baremetal_node_release: >-
+          {{ (_baremetal_member_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}
+
+- name: Refuse to move the fleet backwards
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Assert no member is more than one minor behind the target
+      ansible.builtin.assert:
+        that:
+          - _node_major == _target_major
+          - (_target_minor | int) - (_node_minor | int) <= 1
+        fail_msg: >-
+          {{ item }} runs {{ _node }} and the fleet should run {{ _target }}. Talos
+          upgrades one minor version at a time, so this has to be done in steps.
+      loop: "{{ groups['_baremetal_talos_member'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        _node: "{{ hostvars[item]._baremetal_node_release | regex_replace('^v', '') }}"
+        _target: "{{ _baremetal_target_release | regex_replace('^v', '') }}"
+        _node_major: "{{ _node.split('.')[0] }}"
+        _node_minor: "{{ _node.split('.')[1] }}"
+        _target_major: "{{ _target.split('.')[0] }}"
+        _target_minor: "{{ _target.split('.')[1] }}"
+
+    - name: Assert no member runs a release newer than the target
+      ansible.builtin.assert:
+        that:
+          - _ahead | length == 0
+        fail_msg: >-
+          {{ _ahead | join(', ') }} already run a release newer than
+          {{ _baremetal_target_release }}. Talos does not support downgrades, so
+          this run would move the fleet backwards. Pin baremetal_talos_release to
+          the release the fleet is on, or to a newer one.
+      vars:
+        _members: "{{ groups['_baremetal_talos_member'] | default([]) }}"
+        _running: >-
+          {{ _members | map('extract', hostvars, '_baremetal_node_release')
+             | map('regex_replace', '^v', '') | list }}
+        _target: "{{ _baremetal_target_release | regex_replace('^v', '') }}"
+        _ahead: >-
+          {{ _members | zip(_running) | selectattr(1, 'version', _target, '>')
+             | map(attribute=0) | list }}
+
+- name: Upgrade control plane nodes
+  hosts: _baremetal_talos_member_control
+  connection: local
+  gather_facts: false
+  serial: 1
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Upgrade control plane node
+      ansible.builtin.include_role:
+        name: pokerops.baremetal.baremetal
+        tasks_from: upgrade_node
+
+- name: Upgrade worker nodes
+  hosts: _baremetal_talos_member_worker
+  connection: local
+  gather_facts: false
+  serial: 1
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Upgrade worker node
+      ansible.builtin.include_role:
+        name: pokerops.baremetal.baremetal
+        tasks_from: upgrade_node
+
+- name: Confirm the fleet runs the target release
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the release the node ended up on
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version --short
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _baremetal_final_release
+
+    - name: Assert the node runs the target release
+      ansible.builtin.assert:
+        that:
+          - _reported == hostvars['localhost']._baremetal_target_release
+        fail_msg: >-
+          {{ inventory_hostname }} runs {{ _reported }} rather than
+          {{ hostvars['localhost']._baremetal_target_release }}.
+      vars:
+        _reported: >-
+          {{ (_baremetal_final_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}
