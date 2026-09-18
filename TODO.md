@@ -45,8 +45,6 @@ steps.
   needs a free slot and reports plainly when there is none. If a locked eject ever
   does strand a slot, that reasoning is what to revisit.
 
-## BGP configuration
-
 ## Upgrade coverage
 
 `pokerops.baremetal.talos.upgrade` rolls a release through the fleet and the
