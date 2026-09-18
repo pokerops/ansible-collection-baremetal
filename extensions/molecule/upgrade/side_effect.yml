@@ -39,6 +39,39 @@
       vars:
         _output: "{{ _baremetal_downgrade.stdout | default('') }}"
 
+- name: Confirm Kubernetes converged to the version the toolchain ships
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the Kubernetes version the toolchain ships
+      ansible.builtin.command:
+        cmd: talosctl image k8s-bundle
+      changed_when: false
+      register: _verify_k8s_bundle
+
+    - name: Read the cluster's nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _verify_k8s_nodes
+
+    - name: Assert every node runs the Kubernetes version the toolchain ships
+      ansible.builtin.assert:
+        that:
+          - _running == [_shipped]
+        fail_msg: >-
+          The cluster runs Kubernetes {{ _running | join(', ') }} rather than
+          {{ _shipped }}; the convergence did not upgrade it.
+      vars:
+        _shipped: >-
+          {{ (_verify_k8s_bundle.stdout.split('kube-apiserver:v') | last).split() | first }}
+        _running: >-
+          {{ _verify_k8s_nodes.resources | map(attribute='status.nodeInfo.kubeletVersion')
+             | map('regex_replace', '^v', '') | unique | list }}
+
 - name: Confirm the fleet did not move backwards
   hosts: _baremetal_talos_member
   connection: local

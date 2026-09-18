@@ -1,5 +1,48 @@
 ---
+- name: Work out the Kubernetes release before the one the toolchain ships
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the Kubernetes version the toolchain ships
+      ansible.builtin.command:
+        cmd: talosctl image k8s-bundle
+      changed_when: false
+      register: _upgrade_k8s_bundle
+
+    - name: Read the published kube-apiserver tags
+      ansible.builtin.uri:
+        url: https://registry.k8s.io/v2/kube-apiserver/tags/list
+        return_content: true
+      register: _upgrade_k8s_tags
+      until: _upgrade_k8s_tags is not failed
+      retries: "{{ baremetal_media_retries }}"
+      delay: "{{ baremetal_media_retry_delay }}"
+
+    - name: Record the release before the one the toolchain ships
+      ansible.builtin.set_fact:
+        _upgrade_k8s_shipped: "{{ _shipped }}"
+        _upgrade_k8s_from: "{{ _released | select('version', _shipped, '<') | community.general.version_sort | last }}"
+      vars:
+        _shipped: >-
+          {{ (_upgrade_k8s_bundle.stdout.split('kube-apiserver:v') | last).split() | first }}
+        _released: >-
+          {{ _upgrade_k8s_tags.json.tags | select('match', '^v[0-9]+\.[0-9]+\.[0-9]+$')
+             | map('regex_replace', '^v', '') | list }}
+
+    - name: Assert the cluster will start behind the toolchain
+      ansible.builtin.assert:
+        that:
+          - _upgrade_k8s_from is version(_upgrade_k8s_shipped, '<')
+        fail_msg: >-
+          Worked out {{ _upgrade_k8s_from }} as the release before
+          {{ _upgrade_k8s_shipped }}, which is not older; the scenario would not
+          exercise the Kubernetes upgrade.
+
 - name: Build the cluster at the starting release
   ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
   vars:
     baremetal_talos_release: v1.13.9
+    baremetal_talos_k8s_version: "{{ hostvars['localhost']._upgrade_k8s_from }}"
