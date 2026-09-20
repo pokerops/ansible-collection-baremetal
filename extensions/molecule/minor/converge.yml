@@ -1,0 +1,106 @@
+---
+# Builds the fleet one minor behind the release the devbox lock pins, so that the
+# side effect has a fleet to refuse a two minor jump for and a minor to step it
+# through. `media/talos.yml` requires the boot image and the toolchain to share a
+# minor, so the only way to install an older release is to install the talosctl
+# that matches it -- devbox carries them, and `destroy.yml` puts the lock back.
+#
+# One minor back is as far as this goes: the machine configuration `seed.yml`
+# renders carries a `HostnameConfig` document, which talosctl only registers from
+# 1.12 onwards, so a fleet built two minors back never reaches `talosctl validate`.
+- name: Install the toolchain the fleet is built on
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    _minor_state_directory: "{{ project_directory }}/.molecule/{{ scenario_name }}"
+  tasks:
+    - name: Read the release the toolchain is locked to
+      ansible.builtin.command:
+        cmd: talosctl version --client --short
+      changed_when: false
+      register: _minor_locked
+
+    - name: Read the releases devbox can install talosctl for
+      ansible.builtin.command:
+        cmd: devbox search talosctl --show-all
+        chdir: "{{ project_directory }}"
+      changed_when: false
+      register: _minor_search
+      until: _minor_search is not failed
+      retries: "{{ baremetal_media_retries }}"
+      delay: "{{ baremetal_media_retry_delay }}"
+
+    - name: Record the release the fleet is built on
+      ansible.builtin.set_fact:
+        _minor_locked_release: "{{ _locked }}"
+        _minor_build_release: "{{ _build }}"
+      vars:
+        _locked: "{{ _minor_locked.stdout_lines | last | split | last | regex_replace('^v', '') }}"
+        _released: >-
+          {{ _minor_search.stdout_lines | map('trim')
+             | select('match', '^> [0-9]+\.[0-9]+\.[0-9]+$')
+             | map('regex_replace', '^> ', '') | list }}
+        _build_line: "{{ _locked.split('.')[0] }}.{{ _locked.split('.')[1] | int - 1 }}"
+        _build: >-
+          {{ _released | select('match', (_build_line | regex_escape) ~ '\.')
+             | community.general.version_sort | last | default('', true) }}
+
+    - name: Assert devbox carries a talosctl one minor behind the locked one
+      ansible.builtin.assert:
+        that:
+          - _minor_build_release | length > 0
+          - _minor_build_release is version(_minor_locked_release, '<')
+          - (_minor_build_release.split('.')[1] | int) == (_minor_locked_release.split('.')[1] | int) - 1
+        fail_msg: >-
+          The toolchain is locked to {{ _minor_locked_release }} and the fleet is built on
+          the newest release one minor behind it, which devbox resolved to
+          '{{ _minor_build_release }}'. Without a release on that minor the scenario has no
+          minor jump to stage.
+
+    - name: Create the scenario state directory
+      ansible.builtin.file:
+        path: "{{ _minor_state_directory }}"
+        state: directory
+        mode: "0755"
+
+    - name: Back up the toolchain the devbox lock pins
+      ansible.builtin.copy:
+        src: "{{ project_directory }}/{{ item }}"
+        dest: "{{ _minor_state_directory }}/{{ item }}"
+        mode: "0644"
+        remote_src: true
+        force: false
+      loop:
+        - devbox.json
+        - devbox.lock
+
+    - name: Install the talosctl the fleet is built on
+      ansible.builtin.command:
+        cmd: devbox add talosctl@{{ _minor_build_release }}
+        chdir: "{{ project_directory }}"
+      changed_when: true
+
+    - name: Read the release the toolchain now resolves to
+      ansible.builtin.command:
+        cmd: talosctl version --client --short
+      changed_when: false
+      register: _minor_installed
+
+    - name: Assert the toolchain is the release the fleet is built on
+      ansible.builtin.assert:
+        that:
+          - _reported == _minor_build_release
+        fail_msg: >-
+          devbox was asked for talosctl {{ _minor_build_release }} but the toolchain still
+          reports {{ _reported }}. The profile this shell resolves talosctl through did
+          not move, so the fleet would be built on the wrong release.
+      vars:
+        _reported: "{{ _minor_installed.stdout_lines | last | split | last | regex_replace('^v', '') }}"
+
+- name: Build the fleet one minor behind the locked toolchain
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
+  vars:
+    baremetal_talos_release: "v{{ hostvars['localhost']._minor_build_release }}"

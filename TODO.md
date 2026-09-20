@@ -36,28 +36,24 @@ steps.
 - Create playbooks per switch OS family to read the
   neighbour table using LLPD and configure ports from it.
 
-## Smaller items
-
-- **The virtual media eject is not retried.** Every other Redfish call in `boot.yml`
-  reads its result back and repeats, after sushy answered 500 "database is locked"
-  under six concurrent machines. The eject is deliberately left tolerant instead:
-  `failed_when: false`, on the grounds that the insert following it is what actually
-  needs a free slot and reports plainly when there is none. If a locked eject ever
-  does strand a slot, that reasoning is what to revisit.
-
 ## Upgrade coverage
 
-`pokerops.baremetal.talos.upgrade` rolls a release through the fleet and the
-`upgrade` molecule scenario exercises it between the two most recent releases on
-the toolchain's minor line. What is not covered yet:
+`pokerops.baremetal.talos.upgrade` rolls a release through the fleet. The `patch`
+scenario exercises a patch hop between the two most recent releases on the
+toolchain's minor line, and the downgrade refusal with it. The `minor` scenario
+builds the fleet one minor back -- installing the talosctl that matches, because
+`media/talos.yml` requires the boot image and the toolchain to share a minor --
+then refuses a two minor jump and takes the one minor step. What is not covered
+yet:
 
-- **The minor-jump refusal is guarded but not exercised by a scenario.** A target
-  more than one minor ahead of any member is refused and single-minor jumps are
-  allowed, but the scenario only runs a patch hop: staging a minor jump means
-  bumping the toolchain in the same change, since `media/talos.yml` asserts the
-  image minor matches the local `talosctl`. The downgrade refusal is exercised --
-  the scenario runs the upgrade pinned to an older release, requires it to fail at
-  the guard, and asserts the fleet did not move.
+- **No fleet is ever built more than one minor behind.** The machine configuration
+  `seed.yml` renders carries a `HostnameConfig` document, which talosctl only
+  registers from 1.12 onwards, so a fleet built two minors back dies at
+  `talosctl validate` rather than reaching anything the upgrade path owns. The
+  `minor` scenario therefore refuses a target two minors ahead of the fleet -- the
+  minor after the toolchain's, which has no release yet -- exercising the guard's
+  arithmetic without ever resolving an installer image for it. Reaching further
+  back means rendering a configuration the older talosctl accepts.
 
 ## Cluster add worker support/scenario
 

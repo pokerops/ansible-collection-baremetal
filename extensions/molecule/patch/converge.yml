@@ -1,4 +1,8 @@
 ---
+# Moves the fleet one patch along the toolchain's minor line. The Kubernetes
+# convergence rides along here rather than in a scenario of its own: the cluster is
+# built one Kubernetes release behind the one the toolchain ships, so the side effect
+# has a version to converge it to. Moving the fleet a minor is the `minor` scenario.
 - name: Work out the Kubernetes release before the one the toolchain ships
   hosts: localhost
   connection: local

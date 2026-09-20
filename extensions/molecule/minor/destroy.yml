@@ -1,0 +1,44 @@
+---
+# Tears the fleet down the way every scenario does, then puts back the toolchain
+# converge.yml moved. This is the only place the lock is restored, so that a failed
+# run still leaves the working tree as it found it: `molecule test` destroys whether
+# the sequence passed or not, and the restore is a no-op when there is no backup to
+# restore -- the destroy that opens the sequence, or a scenario that never swapped.
+- name: Destroy KVM guests
+  ansible.builtin.import_playbook: ../default/destroy.yml
+
+- name: Restore the toolchain the devbox lock pins
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _minor_state_directory: "{{ project_directory }}/.molecule/{{ scenario_name }}"
+  tasks:
+    - name: Look for a backed up toolchain
+      ansible.builtin.stat:
+        path: "{{ _minor_state_directory }}/devbox.json"
+      register: _minor_backup
+
+    - name: Put the locked toolchain back
+      when: _minor_backup.stat.exists
+      block:
+        - name: Restore the devbox lock
+          ansible.builtin.copy:
+            src: "{{ _minor_state_directory }}/{{ item }}"
+            dest: "{{ project_directory }}/{{ item }}"
+            mode: "0644"
+            remote_src: true
+          loop:
+            - devbox.json
+            - devbox.lock
+
+        - name: Install the toolchain the devbox lock pins
+          ansible.builtin.command:
+            cmd: devbox install
+            chdir: "{{ project_directory }}"
+          changed_when: true
+
+        - name: Remove the backed up toolchain
+          ansible.builtin.file:
+            path: "{{ _minor_state_directory }}"
+            state: absent

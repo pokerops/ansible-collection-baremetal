@@ -1,0 +1,142 @@
+---
+# The fleet converge.yml built is one minor behind the locked toolchain. Two minors
+# ahead of it is the minor after the toolchain's, which has no release yet; that is
+# deliberate and costs nothing, because the run under test is expected to stop at the
+# guard before anything resolves an installer image, and the guard is arithmetic on
+# the pinned target. Once that minor does ship, the same lookup picks the real
+# release and the assertion is unchanged.
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Read the release the fleet runs
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the release the node is running
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version --short
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _minor_node
+
+    - name: Record the release the node is running
+      ansible.builtin.set_fact:
+        _minor_node_release: >-
+          {{ (_minor_node.stdout.split('Tag:') | last).split() | first | default('unknown') }}
+
+- name: Refuse a jump of two minors
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the releases devbox can install talosctl for
+      ansible.builtin.command:
+        cmd: devbox search talosctl --show-all
+        chdir: "{{ project_directory }}"
+      changed_when: false
+      register: _minor_search
+      until: _minor_search is not failed
+      retries: "{{ baremetal_media_retries }}"
+      delay: "{{ baremetal_media_retry_delay }}"
+
+    - name: Record the releases either side of the one the fleet runs
+      ansible.builtin.set_fact:
+        _minor_fleet_releases: "{{ _running }}"
+        _minor_fleet_release: "{{ _fleet }}"
+        _minor_step_release: "{{ _step }}"
+        _minor_jump_release: "{{ _jump }}"
+      vars:
+        _members: "{{ groups['_baremetal_talos_member'] | default([]) }}"
+        _running: >-
+          {{ _members | map('extract', hostvars, '_minor_node_release')
+             | map('regex_replace', '^v', '') | unique | list }}
+        _fleet: "{{ _running | first | default('') }}"
+        _released: >-
+          {{ _minor_search.stdout_lines | map('trim')
+             | select('match', '^> [0-9]+\.[0-9]+\.[0-9]+$')
+             | map('regex_replace', '^> ', '') | list }}
+        _step_line: "{{ _fleet.split('.')[0] }}.{{ _fleet.split('.')[1] | int + 1 }}"
+        _jump_line: "{{ _fleet.split('.')[0] }}.{{ _fleet.split('.')[1] | int + 2 }}"
+        _step: >-
+          {{ _released | select('match', (_step_line | regex_escape) ~ '\.')
+             | community.general.version_sort | last | default('', true) }}
+        _jump: >-
+          {{ _released | select('match', (_jump_line | regex_escape) ~ '\.')
+             | community.general.version_sort | last | default(_jump_line ~ '.0', true) }}
+
+    - name: Assert the fleet is on one release with a minor to step to
+      ansible.builtin.assert:
+        that:
+          - _minor_fleet_releases | length == 1
+          - _minor_step_release | length > 0
+        fail_msg: >-
+          The fleet runs {{ _minor_fleet_releases | join(', ') | default('nothing', true) }}
+          and the scenario steps it one minor forward, to '{{ _minor_step_release }}'. It
+          needs a fleet on a single release and a release on the minor after it.
+
+    - name: Run the upgrade pinned two minors ahead
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook {{ _inventories }}
+          --extra-vars baremetal_talos_release=v{{ _minor_jump_release }}
+          pokerops.baremetal.talos.upgrade
+      register: _minor_refused
+      changed_when: false
+      failed_when: _minor_refused.rc == 0
+      vars:
+        _inventories: >-
+          {{ ansible_inventory_sources | map('regex_replace', '^', '--inventory ') | join(' ') }}
+
+    - name: Assert the run stopped at the guard rather than somewhere else
+      ansible.builtin.assert:
+        that:
+          - "'Assert no member is more than one minor behind the target' in _output"
+          - "'Install the target release' not in _output"
+        fail_msg: >-
+          The two minor jump failed, but not at the guard: its output carries no refusal,
+          so the failure came from somewhere else.
+      vars:
+        _output: "{{ _minor_refused.stdout | default('') }}"
+
+- name: Confirm the refusal left the fleet alone
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Read the release the node is running
+      ansible.builtin.command:
+        cmd: >-
+          talosctl version --short
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ ansible_host }}
+          --nodes {{ ansible_host }}
+      changed_when: false
+      register: _minor_release_after_refusal
+
+    - name: Assert the node still runs the release the fleet was built on
+      ansible.builtin.assert:
+        that:
+          - _reported == hostvars['localhost']._minor_fleet_release
+        fail_msg: >-
+          {{ inventory_hostname }} runs {{ _reported }} rather than
+          {{ hostvars['localhost']._minor_fleet_release }} after a refused two minor jump;
+          the guard let some of the roll through.
+      vars:
+        _reported: >-
+          {{ (_minor_release_after_refusal.stdout.split('Tag:') | last).split()
+             | first | default('unknown') | regex_replace('^v', '') }}
+
+- name: Step the fleet one minor forward
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
+  vars:
+    baremetal_talos_release: "v{{ hostvars['localhost']._minor_step_release }}"
