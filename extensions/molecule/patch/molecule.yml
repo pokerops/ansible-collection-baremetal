@@ -3,9 +3,9 @@ ansible:
   playbooks:
     converge: converge.yml
     side_effect: side_effect.yml
-    verify: verify.yml
+    verify: ../default/verify.yml
 scenario:
-  name: upgrade
+  name: patch
   test_sequence:
     - dependency
     - prepare

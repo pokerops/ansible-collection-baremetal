@@ -37,7 +37,7 @@ update:
   #!/usr/bin/env bash
   set -euo pipefail
   devbox update
-  scenario="{{justfile_directory()}}/extensions/molecule/upgrade"
+  scenario="{{justfile_directory()}}/extensions/molecule/patch"
   version="$(devbox run -- talosctl version --client --short | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   minor="${version%.*}"
   tags="$(curl -fsSL 'https://api.github.com/repos/siderolabs/talos/releases?per_page=100' \
@@ -55,4 +55,4 @@ update:
   sed -i "s|baremetal_talos_release: v[0-9.]*|baremetal_talos_release: ${older}|" "$scenario/converge.yml"
   sed -i "s|baremetal_talos_release: v[0-9.]*|baremetal_talos_release: ${newer}|" "$scenario/side_effect.yml"
   sed -i "s|_downgrade_release: v[0-9.]*|_downgrade_release: ${older}|" "$scenario/side_effect.yml"
-  echo "toolchain ${version}: upgrade scenario now ${older} -> ${newer}"
+  echo "toolchain ${version}: patch scenario now ${older} -> ${newer}"

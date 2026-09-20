@@ -81,7 +81,7 @@ The ones you most often want to change:
 | `baremetal_talos_release`            | `""`    | the release the fleet runs; empty tracks the local `talosctl`                 |
 | `baremetal_install_disk_require_ssd` | `true`  | restrict the install disk to solid state                                      |
 | `baremetal_reinstall`                | `false` | force built machines back onto the install path                               |
-| `baremetal_talos_k8s_version` | `""`    | Kubernetes version; empty tracks the toolchain                                |
+| `baremetal_talos_k8s_version`        | `""`    | Kubernetes version; empty tracks the toolchain                                |
 | `baremetal_talos_boot`               | `true`  | boot the machines from virtual media                                          |
 | `baremetal_talos_configure`          | `true`  | discover, configure, bootstrap and converge the machines                      |
 
@@ -142,9 +142,18 @@ just pytest             # module unit tests
 just sanity             # ansible-test sanity
 ```
 
-`MOLECULE_SCENARIO=upgrade just test` runs the upgrade scenario, which builds a
-cluster on one release, verifies it, upgrades the fleet, and verifies it again.
-CI runs both scenarios from the same workflow matrix, one after the other.
-The two releases it pins are the newest pair on the toolchain's minor line;
-`just update` refreshes the devbox lock and repins them to match the toolchain it
-resolved.
+`MOLECULE_SCENARIO=patch just test` runs the patch scenario, which builds a cluster
+on one release, verifies it, upgrades the fleet, and verifies it again. It carries
+the downgrade refusal and the Kubernetes convergence with it: the cluster starts a
+Kubernetes release behind the toolchain and has to end up on it. The two Talos
+releases it pins are the newest pair on the toolchain's minor line; `just update`
+refreshes the devbox lock and repins them to match the toolchain it resolved.
+
+`MOLECULE_SCENARIO=minor just test` runs the same shape a minor apart: it installs
+the talosctl one minor behind the locked one -- `media/talos.yml` requires the boot
+image and the toolchain to share a minor -- builds the fleet on that release, then
+requires a two minor jump to be refused before stepping the fleet one minor forward.
+The scenario puts the locked toolchain back when it destroys, including after a
+failed run, so `devbox.json` and `devbox.lock` end where they started.
+
+CI runs the three scenarios from the same workflow matrix, one after the other.

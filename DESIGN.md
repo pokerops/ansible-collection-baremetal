@@ -369,10 +369,12 @@ The image is the Factory installer for the target release built from the same
 schematic the cluster was installed with, so kernel arguments and system
 extensions survive the upgrade.
 
-The `upgrade` molecule scenario builds a cluster with the release pinned to one
-version, verifies it, re-runs deploy with the release pinned one version newer,
-and verifies again -- the same gesture an operator makes, with health asserted on
-both releases.
+Two molecule scenarios cover this, named for the version axis each moves the fleet
+along. The `patch` scenario builds a cluster with the release pinned to one version,
+verifies it, re-runs deploy with the release pinned one version newer, and verifies
+again -- the same gesture an operator makes, with health asserted on both releases.
+The `minor` scenario does it a minor apart, which means installing the talosctl that
+matches the older release, and requires the two minor jump to be refused first.
 
 ## Verification
 
