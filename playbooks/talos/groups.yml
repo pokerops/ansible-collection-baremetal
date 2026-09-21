@@ -99,3 +99,54 @@
         - name: Debug worker nodes
           ansible.builtin.debug:
             msg: "The following hosts have been detected as worker nodes {{ groups['_baremetal_talos_install_worker'] | default([]) }}"
+
+- name: Detect cluster orphans
+  hosts: localhost
+  connection: local
+  strategy: linear
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Stat cluster kubeconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_cluster_kubeconfig
+
+    - name: Query cluster nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_cluster_nodes
+      failed_when: false
+      when: _baremetal_cluster_kubeconfig.stat.exists
+
+    - name: Initialize cluster membership facts
+      ansible.builtin.set_fact:
+        _baremetal_talos_orphan_control: []
+        _baremetal_talos_orphan_worker: []
+        _baremetal_talos_orphans: []
+        _baremetal_cluster_readable: "{{ _baremetal_cluster_nodes.resources is defined }}"
+
+    - name: Set orphan membership facts
+      ansible.builtin.set_fact:
+        _baremetal_talos_orphan_control: "{{ _nodes_control | difference(_inventory_control) }}"
+        _baremetal_talos_orphan_worker: "{{ _nodes_worker | difference(_inventory_worker) }}"
+        _baremetal_talos_orphans: "{{ _nodes_cluster | difference(_inventory_cluster) }}"
+      vars:
+        # The inventory groups, so the play is --limit safe
+        _inventory_control: "{{ groups[baremetal_talos_controlplane_group] | default([]) }}"
+        _inventory_worker: "{{ groups[baremetal_talos_worker_group] | default([]) }}"
+        _inventory_cluster: "{{ _inventory_control + _inventory_worker }}"
+        _nodes_cluster: "{{ _baremetal_cluster_nodes.resources | map(attribute='metadata.name') }}"
+        _nodes_control: >-
+          {{ _baremetal_cluster_nodes.resources
+             | selectattr('metadata.labels', 'contains', 'node-role.kubernetes.io/control-plane')
+             | map(attribute='metadata.name') }}
+        _nodes_worker: "{{ _nodes_cluster | difference(_nodes_control) }}"
+      when: _baremetal_cluster_readable | bool
+
+    - name: Debug orphan members
+      ansible.builtin.debug:
+        msg: "The following orphan members will be decommissioned {{ _baremetal_talos_orphans | list }}"
+      when: _baremetal_talos_orphans | length > 0

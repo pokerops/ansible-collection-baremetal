@@ -55,10 +55,36 @@ yet:
   arithmetic without ever resolving an installer image for it. Reaching further
   back means rendering a configuration the older talosctl accepts.
 
-## Cluster add worker support/scenario
+## Cluster scaling
 
-## Cluster delete worker support/scenario
+`pokerops.baremetal.talos.teardown` converges cluster membership down to the
+inventory -- drain, wipe, delete the node, forget what discovery recorded -- under
+`baremetal_talos_teardown_enable`, and the `scale` molecule scenario takes a worker
+out of the inventory and puts it back. Scaling out needed no new code: a machine that
+has been torn down is an inventory host that does not answer, which is what deploy
+already installs. What is not covered yet:
+
+- **Control plane members cannot be taken out.** Teardown refuses them. It means
+  having the member leave etcd first -- `talosctl etcd leave`, or `etcd remove-member`
+  from a survivor when it is already gone -- and then deciding what a cluster does
+  when a removal would drop it below quorum. Neither is written.
+- **A machine that is already unreachable is not reclaimed.** The wipe needs the
+  Talos API, so a member that died before it left the inventory has its node object
+  deleted and its disk left as it was. Whoever revives it gets a machine that still
+  believes it is a member. Teardown reports the address it could not reach.
+- **Only one machine is taken out at a time.** Teardown loops over the members it
+  found, so several ought to work, but nothing asserts that a cluster losing two
+  workers at once reschedules what was on them.
+- **Nothing asserts the refusal to run on an unreadable cluster.** Teardown stops
+  when `baremetal_talos_teardown_enable` is set and the cluster cannot be read, on
+  the grounds that taking machines out on a partial answer is guesswork. That guard
+  is exercised by hand, not by a scenario.
 
 ## Cluster reinstall worker support/scenario
 
-## Cluster renstall control support/scenario
+Largely covered by the scaling path already: removal wipes the machine and the next
+deploy installs it again. What is missing is the trigger, `baremetal_reinstall=true`,
+which forces a machine that is still a healthy member back onto the install path
+without going through removal first.
+
+## Cluster reinstall control support/scenario

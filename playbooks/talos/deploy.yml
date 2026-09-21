@@ -5,6 +5,10 @@
 - name: Validate collection parameters
   ansible.builtin.import_playbook: pokerops.baremetal.validate
 
+- name: Tear down orphan nodes
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.teardown
+  when: baremetal_talos_configure | bool
+
 - name: Start media server
   ansible.builtin.import_playbook: pokerops.baremetal.media.start
 

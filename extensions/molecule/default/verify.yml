@@ -55,7 +55,7 @@
           {{ groups['_baremetal_inventory_nodes']
              | map('extract', hostvars, '_verify_node_release') | unique | list }}
 
-    - name: Read the cluster's nodes
+    - name: Query cluster nodes
       kubernetes.core.k8s_info:
         kind: Node
         kubeconfig: "{{ baremetal_kubeconfig }}"

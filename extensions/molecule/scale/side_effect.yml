@@ -1,0 +1,85 @@
+---
+- name: Scale the cluster down to the workers the inventory keeps
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
+  vars:
+    baremetal_talos_worker_group: talos_worker_core
+    baremetal_talos_teardown_enable: true
+
+- name: Confirm the cluster is made of the machines the inventory kept
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Query cluster nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _scale_scaled_down
+
+    - name: Assert the workers the inventory dropped left, and nothing else did
+      ansible.builtin.assert:
+        that:
+          - _joined == _kept
+        fail_msg: >-
+          After scaling down, the cluster is
+          {{ _joined | join(', ') | default('empty', true) }} rather than
+          {{ _kept | join(', ') }}.
+      vars:
+        _joined: "{{ _scale_scaled_down.resources | map(attribute='metadata.name') | sort }}"
+        _kept: >-
+          {{ ((groups['talos_controlplane'] | default([])) + (groups['talos_worker_core'] | default([]))) | sort }}
+
+    - name: Assert every node that is left is Ready
+      ansible.builtin.assert:
+        that:
+          - _ready == ['True']
+        fail_msg: >-
+          {{ item.metadata.name }} is not Ready
+          (Ready={{ _ready | join(',') | default('absent', true) }}) after the cluster
+          was scaled down.
+      loop: "{{ _scale_scaled_down.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      vars:
+        _ready: >-
+          {{ item.status.conditions | selectattr('type', 'equalto', 'Ready')
+             | map(attribute='status') | list }}
+
+    - name: Assert the machines that left stopped serving the Talos API
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item].ansible_host }}"
+        port: 50000
+        state: stopped
+        timeout: 30
+      loop: "{{ groups['talos_worker_scale'] | default([]) }}"
+
+- name: Scale the cluster back out
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
+
+- name: Confirm the machines the inventory carries again rejoined
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Query cluster nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _scale_scaled_out
+
+    - name: Assert the cluster is the whole inventory again
+      ansible.builtin.assert:
+        that:
+          - _joined == _expected
+        fail_msg: >-
+          After scaling back out, the cluster is
+          {{ _joined | join(', ') | default('empty', true) }} rather than
+          {{ _expected | join(', ') }}.
+      vars:
+        _joined: "{{ _scale_scaled_out.resources | map(attribute='metadata.name') | sort }}"
+        _expected: >-
+          {{ ((groups['talos_controlplane'] | default([])) + (groups['talos_worker'] | default([]))) | sort }}

@@ -207,7 +207,7 @@
           No hosts landed in _baremetal_inventory_nodes, so every per-node
           assertion above matched nothing and passed without running.
 
-    - name: Read the cluster's nodes
+    - name: Query cluster nodes
       kubernetes.core.k8s_info:
         kind: Node
         kubeconfig: "{{ baremetal_kubeconfig }}"

@@ -41,7 +41,7 @@
     - name: Converge the version the cluster is running
       when: _baremetal_kubeconfig_file.stat.exists
       block:
-        - name: Read the cluster's nodes
+        - name: Query cluster nodes
           kubernetes.core.k8s_info:
             kind: Node
             kubeconfig: "{{ baremetal_kubeconfig }}"

@@ -52,7 +52,7 @@
       changed_when: false
       register: _verify_k8s_bundle
 
-    - name: Read the cluster's nodes
+    - name: Query cluster nodes
       kubernetes.core.k8s_info:
         kind: Node
         kubeconfig: "{{ baremetal_kubeconfig }}"

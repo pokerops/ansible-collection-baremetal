@@ -75,6 +75,21 @@ installed machine. Classification does the same job without the veto, and a mixe
 fleet -- some machines built, some not -- splits automatically rather than having to
 be separated by hand or rebuilt wholesale.
 
+The same playbook asks the question from the cluster's side: which members does the
+cluster carry that the inventory does not? Those cannot be a group, because a group
+holds inventory hosts and these are exactly the machines no longer in the inventory,
+so they are published as `_baremetal_talos_orphans` on localhost -- the way discovery
+publishes what it scanned. Everything recorded about one comes from the cluster
+rather than the inventory, which by definition no longer describes it: its address
+from the node's `InternalIP`, and whether it runs the control plane from the label
+kubelet registered with. The read is tolerated rather than fatal, so a fleet with no
+cluster yet classifies normally.
+
+That set is compared against the inventory groups rather than against the groups
+above, because those honour `--limit`. A run limited to one machine would otherwise
+be indistinguishable from an inventory every other member had been taken out of, and
+teardown would eat the cluster.
+
 ## Boot media
 
 **One image for the whole fleet.** Nothing in the image is per node -- no address,
@@ -375,6 +390,47 @@ verifies it, re-runs deploy with the release pinned one version newer, and verif
 again -- the same gesture an operator makes, with health asserted on both releases.
 The `minor` scenario does it a minor apart, which means installing the talosctl that
 matches the older release, and requires the two minor jump to be refused first.
+
+## Scaling
+
+Scaling out needs no mechanism of its own. A machine the cluster has never met is an
+inventory host that does not answer on its address, which is what classification
+already calls an install: add the host, run deploy, and it is booted, discovered,
+seeded and joined like any other. Cluster credentials are generated once and kept, so
+a worker added a year later is issued the credentials of the cluster it is joining
+rather than a new cluster's.
+
+Scaling down is the same statement read the other way. `playbooks/talos/teardown.yml`
+takes the machines classification put in `_baremetal_talos_orphans` and drains, wipes
+(`talosctl reset --graceful=false --reboot`), deletes and forgets each one. The
+machine ends with no cluster state on disk, which is what keeps the two directions
+symmetric: a machine taken out is indistinguishable from one that was never
+installed, so putting it back is scaling out rather than a path of its own.
+
+Working out which machines those are belongs to classification rather than to
+teardown, because it is the same question the install and member groups answer --
+what is this fleet made of -- and splitting it would leave two places deciding. A
+list of machines to destroy, supplied separately instead, would mean saying the same
+thing twice (delete the host, then name it again) and would only reach machines still
+in the inventory, which is the wrong set.
+
+`baremetal_talos_teardown_enable` gates it and defaults to false. Deploy is otherwise
+additive, and an inventory that is merely incomplete -- a file not yet written, a
+group_vars typo, a host commented out for the afternoon -- looks exactly like one that
+has had machines taken out of it. The two must not mean the same thing, so the
+destructive reading has to be asked for. Left off, the drift is reported and nothing
+is touched. This is the shape `baremetal_reinstall` already has: the fleet's desired
+state is declared in one place, and a flag says how far deploy may go to reach it.
+
+Teardown runs before deploy builds anything, so a refusal lands before a machine is
+powered off rather than half way through. Control plane members are refused outright:
+removing one means leaving etcd before the wipe, and a cluster dropping below quorum
+needs more care than a worker does.
+
+The `scale` molecule scenario builds the fleet, then points
+`baremetal_talos_worker_group` at a subset -- the harness's way of saying machines
+have left the inventory -- and asserts the cluster is exactly what the inventory kept
+and every node Ready. Pointing it back and running deploy again brings them home.
 
 ## Verification
 

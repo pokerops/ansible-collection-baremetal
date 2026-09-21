@@ -9,11 +9,13 @@
   changed_when: false
   register: _baremetal_node_release
 
+- name: Set node facts
+  ansible.builtin.set_fact:
+    _baremetal_release_target: "{{ hostvars['localhost']._baremetal_target_release }}"
+    _baremetal_release_current: "{{ (_baremetal_node_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}"
+
 - name: Upgrade the node
-  when: _baremetal_current_release != hostvars['localhost']._baremetal_target_release
-  vars:
-    _baremetal_current_release: >-
-      {{ (_baremetal_node_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}
+  when: _baremetal_release_current != _baremetal_release_target
   block:
     - name: Install the target release
       ansible.builtin.command:
@@ -34,10 +36,11 @@
           --nodes {{ ansible_host }}
       changed_when: false
       register: _baremetal_upgraded_release
-      until: >-
-        ((_baremetal_upgraded_release.stdout.split('Tag:') | last).split() | first | default('unknown')) == hostvars['localhost']._baremetal_target_release
+      until: _baremetal_release_upgrade == _baremetal_release_target
       retries: "{{ baremetal_talos_ready_retries }}"
       delay: "{{ baremetal_talos_ready_delay }}"
+      vars:
+        _baremetal_release_upgrade: "{{ (_baremetal_upgraded_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}"
 
     - name: Wait for the node to rejoin the cluster
       kubernetes.core.k8s_info:
@@ -45,26 +48,32 @@
         name: "{{ inventory_hostname }}"
         kubeconfig: "{{ baremetal_kubeconfig }}"
       delegate_to: localhost
-      register: _baremetal_node_readiness
+      register: _baremetal_node_query
+      # One expression rather than two: until takes a condition, not a list. The
+      # order matters, because the facts below reach into resources[0] and `and`
+      # stops at the first false -- a node that has not come back yet is caught by
+      # the length test before anything indexes an empty list.
       until: >-
-        (_baremetal_node_readiness.resources | default([]) | length > 0)
-        and (_baremetal_node_readiness.resources[0].status.conditions
-             | selectattr('type', 'equalto', 'Ready')
-             | map(attribute='status') | first | default('False')) == 'True'
-      retries: "{{ baremetal_talos_ready_retries }}"
-      delay: "{{ baremetal_talos_ready_delay }}"
-
-    - name: Wait for every workload to settle before moving on
-      kubernetes.core.k8s_info:
-        kind: Pod
-        kubeconfig: "{{ baremetal_kubeconfig }}"
-      delegate_to: localhost
-      register: _baremetal_pods
-      until: _baremetal_unsettled | length == 0
+        _baremetal_node_resources_all | length > 0
+        and _baremetal_node_resources_status == 'True'
       retries: "{{ baremetal_talos_ready_retries }}"
       delay: "{{ baremetal_talos_ready_delay }}"
       vars:
-        _baremetal_unsettled: >-
-          {{ _baremetal_pods.resources | default([])
-             | rejectattr('status.phase', 'in', ['Running', 'Succeeded'])
-             | map(attribute='metadata.name') | list }}
+        _baremetal_node_resources_all: "{{ _baremetal_node_query.resources | default([]) }}"
+        _baremetal_node_resources: "{{ _baremetal_node_query.resources | first }}"
+        _baremetal_node_resources_conditions: "{{ _baremetal_node_resources.status.conditions }}"
+        _baremetal_node_resources_ready: "{{ _baremetal_node_resources_conditions | selectattr('type', 'equalto', 'Ready') }}"
+        _baremetal_node_resources_status: "{{ _baremetal_node_resources_ready | map(attribute='status') | first | default('False') }}"
+
+    - name: Wait for every workload to settle
+      kubernetes.core.k8s_info:
+        kind: Pod
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_pods_data
+      until: _baremetal_pods_ko | length == 0
+      retries: "{{ baremetal_talos_ready_retries }}"
+      delay: "{{ baremetal_talos_ready_delay }}"
+      vars:
+        _baremetal_pods_all: "{{ _baremetal_pods_data.resources | default([]) }}"
+        _baremetal_pods_ko: >-
+          {{ _baremetal_pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}

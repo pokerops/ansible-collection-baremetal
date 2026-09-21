@@ -1,0 +1,5 @@
+---
+# The whole inventory, built the ordinary way. The scaling happens in the side
+# effect, which takes a worker out of this cluster and puts it back.
+- name: Converge
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy

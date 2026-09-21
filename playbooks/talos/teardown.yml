@@ -1,0 +1,57 @@
+---
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Tear down orphan nodes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    # Outside the block below, which only opens when orphans were found: an empty
+    # orphan list means either that the cluster has none or that it could not be
+    # read at all, and a run that asked to converge membership without ever seeing
+    # the cluster has to say so rather than report success having done nothing.
+    - name: Verify cluster control plane
+      ansible.builtin.assert:
+        that: _baremetal_cluster_readable | bool
+        fail_msg: Unable to query cluster control plane during node teardown request
+      when: baremetal_talos_teardown_enable | bool
+
+    - name: Tear down orphan cluster nodes
+      when: _baremetal_talos_orphans | length > 0
+      block:
+        - name: Report what setting baremetal_talos_teardown_enable would take out
+          ansible.builtin.debug:
+            msg: "Set baremetal_talos_teardown_enable=true to take {{ _baremetal_talos_orphan_worker }} out of the cluster"
+          when: not baremetal_talos_teardown_enable | bool
+
+        - name: Tear down worker nodes
+          when: baremetal_talos_teardown_enable | bool
+          block:
+            - name: Reject control plane teardown requests
+              ansible.builtin.assert:
+                that: _baremetal_talos_orphan_control | length == 0
+                fail_msg: "Invalid control plane teardown operation requested for nodes {{ _baremetal_talos_orphan_control }}"
+
+            - name: Take each member out of the cluster
+              ansible.builtin.include_role:
+                name: pokerops.baremetal.baremetal
+                tasks_from: teardown_node
+              loop_control:
+                loop_var: _baremetal_talos_orphan
+              loop: "{{ _baremetal_talos_orphan_worker }}"
+
+            - name: Wait for every workload to settle
+              kubernetes.core.k8s_info:
+                kind: Pod
+                kubeconfig: "{{ baremetal_kubeconfig }}"
+              register: _baremetal_pods_data
+              until: _baremetal_pods_ko | length == 0
+              retries: "{{ baremetal_talos_ready_retries }}"
+              delay: "{{ baremetal_talos_ready_delay }}"
+              vars:
+                _baremetal_pods_all: "{{ _baremetal_pods_data.resources | default([]) }}"
+                _baremetal_pods_ko: >-
+                  {{ _baremetal_pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}

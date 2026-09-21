@@ -1,0 +1,65 @@
+---
+- name: Query cluster nodes
+  kubernetes.core.k8s_info:
+    kind: Node
+    name: "{{ _baremetal_talos_orphan }}"
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+  register: _baremetal_talos_k8s_nodes
+
+- name: Set cluster node facts
+  ansible.builtin.set_fact:
+    _baremetal_talos_orphan_address: "{{ _baremetal_talos_orphan_addr }}"
+  vars:
+    _baremetal_talos_orphan_addr_data: "{{ _baremetal_talos_k8s_nodes.resources | map(attribute='status.addresses') | first | default([], true) }}"
+    _baremetal_talos_orphan_addr_internal: "{{ _baremetal_talos_orphan_addr_data | selectattr('type', 'equalto', 'InternalIP') }}"
+    _baremetal_talos_orphan_addr: "{{ _baremetal_talos_orphan_addr_internal | map(attribute='address') | first | default('', true) }}"
+
+- name: Move the workloads off the member
+  kubernetes.core.k8s_drain:
+    name: "{{ _baremetal_talos_orphan }}"
+    state: drain
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+    delete_options:
+      delete_emptydir_data: true
+      ignore_daemonsets: true
+      force: true
+      wait_timeout: "{{ baremetal_talos_drain_timeout }}"
+
+- name: Check whether the member still answers
+  ansible.builtin.wait_for:
+    host: "{{ _baremetal_talos_orphan_address }}"
+    port: 50000
+    timeout: 30
+  failed_when: false
+  register: _baremetal_teardown_reachable
+
+- name: Wipe the member from Talos
+  ansible.builtin.command:
+    cmd: >-
+      talosctl reset
+      --graceful=false
+      --reboot
+      --wait=false
+      --talosconfig {{ baremetal_talosconfig }}
+      --endpoints {{ _baremetal_talos_orphan_address }}
+      --nodes {{ _baremetal_talos_orphan_address }}
+  changed_when: true
+
+- name: Wait for the member to stop serving the Talos API
+  ansible.builtin.wait_for:
+    host: "{{ _baremetal_talos_orphan_address }}"
+    port: 50000
+    state: stopped
+    timeout: "{{ baremetal_talos_teardown_timeout }}"
+
+- name: Wipe the member from Kubernetes
+  kubernetes.core.k8s:
+    state: absent
+    kind: Node
+    name: "{{ _baremetal_talos_orphan }}"
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+
+- name: Drop node discovery facts
+  ansible.builtin.file:
+    path: "{{ inventory_dir }}/host_vars/{{ _baremetal_talos_orphan }}/discovered.yml"
+    state: absent
