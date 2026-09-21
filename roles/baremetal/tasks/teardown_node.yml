@@ -25,6 +25,9 @@
       force: true
       wait_timeout: "{{ baremetal_talos_drain_timeout }}"
 
+# A member that has already gone leaves a node object behind but no address to find,
+# so the wipe has nothing to aim at. That is not an error: the node is still deleted
+# below, which is the most that can be done for a machine whose disk is out of reach.
 - name: Check whether the member still answers
   ansible.builtin.wait_for:
     host: "{{ _baremetal_talos_orphan_address }}"
@@ -32,6 +35,7 @@
     timeout: 30
   failed_when: false
   register: _baremetal_teardown_reachable
+  when: _baremetal_talos_orphan_address | length > 0
 
 - name: Wipe the member from Talos
   ansible.builtin.command:
@@ -44,6 +48,9 @@
       --endpoints {{ _baremetal_talos_orphan_address }}
       --nodes {{ _baremetal_talos_orphan_address }}
   changed_when: true
+  when:
+    - _baremetal_talos_orphan_address | length > 0
+    - _baremetal_teardown_reachable.msg | default('', true) | length == 0
 
 - name: Wait for the member to stop serving the Talos API
   ansible.builtin.wait_for:
@@ -51,6 +58,7 @@
     port: 50000
     state: stopped
     timeout: "{{ baremetal_talos_teardown_timeout }}"
+  when: _baremetal_talos_orphan_address | length > 0
 
 - name: Wipe the member from Kubernetes
   kubernetes.core.k8s:

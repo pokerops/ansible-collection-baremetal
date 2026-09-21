@@ -78,12 +78,18 @@ be separated by hand or rebuilt wholesale.
 The same playbook asks the question from the cluster's side: which members does the
 cluster carry that the inventory does not? Those cannot be a group, because a group
 holds inventory hosts and these are exactly the machines no longer in the inventory,
-so they are published as `_baremetal_talos_orphans` on localhost -- the way discovery
-publishes what it scanned. Everything recorded about one comes from the cluster
-rather than the inventory, which by definition no longer describes it: its address
-from the node's `InternalIP`, and whether it runs the control plane from the label
-kubelet registered with. The read is tolerated rather than fatal, so a fleet with no
-cluster yet classifies normally.
+so they are published as facts on localhost -- the way discovery publishes what it
+scanned. `_baremetal_talos_orphans` holds all of them, and they are split by role
+into `_baremetal_talos_orphan_control` and `_baremetal_talos_orphan_worker`, which is
+what lets teardown refuse one kind and act on the other without deciding anything
+itself.
+
+Which role a member holds comes from the cluster rather than from the inventory,
+which by definition no longer describes it: the label kubelet registered with, rather
+than the group the host used to sit in. `_baremetal_cluster_readable` records whether
+the cluster answered at all, because an empty orphan list otherwise means either that
+there are none or that nothing could be read. The read is tolerated rather than
+fatal, so a fleet with no cluster yet classifies normally.
 
 That set is compared against the inventory groups rather than against the groups
 above, because those honour `--limit`. A run limited to one machine would otherwise
@@ -401,11 +407,18 @@ a worker added a year later is issued the credentials of the cluster it is joini
 rather than a new cluster's.
 
 Scaling down is the same statement read the other way. `playbooks/talos/teardown.yml`
-takes the machines classification put in `_baremetal_talos_orphans` and drains, wipes
-(`talosctl reset --graceful=false --reboot`), deletes and forgets each one. The
+takes the machines classification put in `_baremetal_talos_orphan_worker` and drains,
+wipes (`talosctl reset --graceful=false --reboot`), deletes and forgets each one --
+refusing the whole run first if `_baremetal_talos_orphan_control` holds anything. The
 machine ends with no cluster state on disk, which is what keeps the two directions
 symmetric: a machine taken out is indistinguishable from one that was never
 installed, so putting it back is scaling out rather than a path of its own.
+
+The machine's address comes from the node's `InternalIP`, read back at teardown time
+rather than carried from classification. A member that has already gone has no
+address to find, and that is not an error: the wipe is skipped and the node object
+deleted anyway, which is the most that can be done for a machine whose disk is out of
+reach.
 
 Working out which machines those are belongs to classification rather than to
 teardown, because it is the same question the install and member groups answer --

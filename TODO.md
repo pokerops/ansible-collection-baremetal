@@ -72,9 +72,6 @@ already installs. What is not covered yet:
   Talos API, so a member that died before it left the inventory has its node object
   deleted and its disk left as it was. Whoever revives it gets a machine that still
   believes it is a member. Teardown reports the address it could not reach.
-- **Only one machine is taken out at a time.** Teardown loops over the members it
-  found, so several ought to work, but nothing asserts that a cluster losing two
-  workers at once reschedules what was on them.
 - **Nothing asserts the refusal to run on an unreadable cluster.** Teardown stops
   when `baremetal_talos_teardown_enable` is set and the cluster cannot be read, on
   the grounds that taking machines out on a partial answer is guesswork. That guard

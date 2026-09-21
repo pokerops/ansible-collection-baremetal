@@ -24,7 +24,7 @@
       block:
         - name: Report what setting baremetal_talos_teardown_enable would take out
           ansible.builtin.debug:
-            msg: "Set baremetal_talos_teardown_enable=true to take {{ _baremetal_talos_orphan_worker }} out of the cluster"
+            msg: "Set baremetal_talos_teardown_enable=true to take {{ _baremetal_talos_orphans }} out of the cluster"
           when: not baremetal_talos_teardown_enable | bool
 
         - name: Tear down worker nodes
