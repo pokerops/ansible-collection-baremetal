@@ -63,6 +63,7 @@ baremetal_reinstall: false
 baremetal_talos_boot: true
 baremetal_talos_configure: true
 
+baremetal_talos_annotate_enable: true
 baremetal_talos_teardown_enable: false
 baremetal_talos_teardown_timeout: 600
 baremetal_talos_drain_timeout: 300
@@ -88,3 +89,4 @@ baremetal_talos_bootstrap_delay: 15
 baremetal_talos_health_timeout: 15m
 
 baremetal_talos_upgrade_timeout: 30m
+baremetal_talos_cordon_annotation: "baremetal.pokerops.io/cordoned-by"

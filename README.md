@@ -82,6 +82,7 @@ The ones you most often want to change:
 | `baremetal_install_disk_require_ssd` | `true`  | restrict the install disk to solid state                                      |
 | `baremetal_reinstall`                | `false` | force built machines back onto the install path                               |
 | `baremetal_talos_teardown_enable`    | `false` | take cluster members the inventory no longer carries out                      |
+| `baremetal_talos_annotate_enable`    | `true`  | record each member's BMC on its node, so it outlives the machine              |
 | `baremetal_talos_k8s_version`        | `""`    | Kubernetes version; empty tracks the toolchain                                |
 | `baremetal_talos_boot`               | `true`  | boot the machines from virtual media                                          |
 | `baremetal_talos_configure`          | `true`  | discover, configure, bootstrap and converge the machines                      |

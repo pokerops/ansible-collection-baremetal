@@ -9,10 +9,6 @@
   roles:
     - pokerops.baremetal.baremetal
   tasks:
-    # Outside the block below, which only opens when orphans were found: an empty
-    # orphan list means either that the cluster has none or that it could not be
-    # read at all, and a run that asked to converge membership without ever seeing
-    # the cluster has to say so rather than report success having done nothing.
     - name: Verify cluster control plane
       ansible.builtin.assert:
         that: _baremetal_cluster_readable | bool
@@ -47,11 +43,54 @@
               kubernetes.core.k8s_info:
                 kind: Pod
                 kubeconfig: "{{ baremetal_kubeconfig }}"
-              register: _baremetal_pods_data
-              until: _baremetal_pods_ko | length == 0
+              register: _baremetal_pod_data
+              until: _pods_ko | length == 0
               retries: "{{ baremetal_talos_ready_retries }}"
               delay: "{{ baremetal_talos_ready_delay }}"
               vars:
-                _baremetal_pods_all: "{{ _baremetal_pods_data.resources | default([]) }}"
-                _baremetal_pods_ko: >-
-                  {{ _baremetal_pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}
+                _pods_all: "{{ _baremetal_pod_data.resources | default([]) }}"
+                _pods_ko: "{{ _pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}"
+
+- name: Return cordoned nodes into the cluster
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Query node registration
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      delegate_to: localhost
+      register: _baremetal_member_node
+
+    - name: Set node facts
+      ansible.builtin.set_fact:
+        _baremetal_member_cordon: "{{ _cordon }}"
+      vars:
+        _resources: "{{ _baremetal_member_node.resources }}"
+        _annotations: "{{ _resources | map(attribute='metadata.annotations') | first }}"
+        _cordon: "{{ _annotations[baremetal_talos_cordon_annotation] | default('') }}"
+
+    - name: Uncordon node
+      when: _baremetal_member_cordon == 'teardown'
+      block:
+        - name: Return the member to service
+          kubernetes.core.k8s_drain:
+            name: "{{ inventory_hostname }}"
+            state: uncordon
+            kubeconfig: "{{ baremetal_kubeconfig }}"
+          delegate_to: localhost
+
+        - name: Drop the teardown cordon mark
+          kubernetes.core.k8s:
+            state: patched
+            kind: Node
+            name: "{{ inventory_hostname }}"
+            kubeconfig: "{{ baremetal_kubeconfig }}"
+            definition:
+              metadata:
+                annotations: "{{ {baremetal_talos_cordon_annotation: null} }}"
+          delegate_to: localhost

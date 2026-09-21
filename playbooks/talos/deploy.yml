@@ -31,6 +31,10 @@
   ansible.builtin.import_playbook: pokerops.baremetal.talos.bootstrap
   when: baremetal_talos_configure | bool
 
+- name: Record how each member is reached out of band
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.annotate
+  when: baremetal_talos_configure | bool
+
 - name: Converge node networking
   ansible.builtin.import_playbook: pokerops.baremetal.talos.network
   when: baremetal_talos_configure | bool

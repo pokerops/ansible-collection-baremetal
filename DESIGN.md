@@ -416,9 +416,55 @@ installed, so putting it back is scaling out rather than a path of its own.
 
 The machine's address comes from the node's `InternalIP`, read back at teardown time
 rather than carried from classification. A member that has already gone has no
-address to find, and that is not an error: the wipe is skipped and the node object
-deleted anyway, which is the most that can be done for a machine whose disk is out of
-reach.
+address to find, or none that answers, and that is not an error: the wipe is skipped
+and the node object kept. The node object is the only record an orphan leaves --
+the inventory no longer carries it, so its address and anything else written onto the
+node live nowhere else -- and deleting it after a wipe that did not happen would
+leave a machine that still believes it is a member with nothing left to find it by.
+Keeping it means the next run sees the same orphan and tries again, which is how a
+machine that was merely powered off gets wiped without anyone intervening.
+
+The member is cordoned first, whatever happens next. That is not the drain's doing
+any more: it is what holds a machine out of service when the wipe does not happen and
+the node object stays. One that was only rebooting comes back Ready, and nothing
+should be scheduled onto a disk the next run means to erase. The cordon is marked
+`baremetal.pokerops.io/cordoned-by: teardown`, because lifting it later has to be
+able to tell it from one a person placed for their own reasons.
+
+The workloads come off either way, and that is deliberate. A node that has stopped
+answering holds its pods hostage: Kubernetes waits out a five minute toleration
+before rescheduling them, and never reschedules a StatefulSet's at all while the node
+object stands, because it cannot confirm the old pod is gone. A member that still
+answers is drained, evicting politely and honouring disruption budgets. One that does
+not is not drained at all -- eviction means nothing to a machine with no kubelet to
+confirm it -- and its pods are deleted outright with no grace period, which is what
+releases them from a node object this run is about to keep. Daemon set pods are left
+alone, as a drain leaves them: deleting one only has its controller place another on
+the same dead machine.
+
+Putting the host back in the inventory is how the decision to remove it is taken
+back, and teardown acts on that too, lifting the cordon on a member the inventory
+carries again. That half is not gated on `baremetal_talos_teardown_enable`, because
+the flag exists to hold back destruction and returning a machine to service is the
+opposite of it. Only a cordon carrying the mark is lifted, and the mark is dropped on
+the way out, so a cordon placed by hand afterwards is never mistaken for one of ours.
+
+Out of reach, that is, over the Talos API. The BMC answers whatever the machine is
+doing, which makes it the one handle that works on a machine that has stopped
+listening -- and it is per-machine inventory data, so it is missing for exactly the
+machines that need it most, the ones the inventory no longer carries.
+`playbooks/talos/annotate.yml` closes that gap by writing the BMC address and system
+id onto each node while the machine is still a member, under
+`baremetal.pokerops.io/`. A node object lives in etcd rather than on the machine, so
+what is recorded there outlives the machine going dark.
+
+This is provenance rather than desired state: the cluster recording which BMC a node
+was provisioned from, in the same spirit as the discovery facts written back to the
+inventory. Nothing declares a fleet by annotating nodes, and the inventory remains
+the only place membership is declared. Credentials are deliberately not written --
+an address and a system id are identifiers, while the username and password are
+fleet-wide secrets and a node annotation is readable by anything with cluster read
+access.
 
 Working out which machines those are belongs to classification rather than to
 teardown, because it is the same question the install and member groups answer --

@@ -69,11 +69,14 @@
       kubernetes.core.k8s_info:
         kind: Pod
         kubeconfig: "{{ baremetal_kubeconfig }}"
-      register: _baremetal_pods_data
-      until: _baremetal_pods_ko | length == 0
+      # As above: this play targets the members, and only localhost carries an
+      # interpreter with the kubernetes library. A kubernetes.core task addressed to
+      # a member runs against the machine's own python and fails on the import.
+      delegate_to: localhost
+      register: _baremetal_pod_data
+      until: _pods_ko | length == 0
       retries: "{{ baremetal_talos_ready_retries }}"
       delay: "{{ baremetal_talos_ready_delay }}"
       vars:
-        _baremetal_pods_all: "{{ _baremetal_pods_data.resources | default([]) }}"
-        _baremetal_pods_ko: >-
-          {{ _baremetal_pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}
+        _pods_all: "{{ _baremetal_pod_data.resources | default([]) }}"
+        _pods_ko: "{{ _pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}"

@@ -68,10 +68,29 @@ already installs. What is not covered yet:
   having the member leave etcd first -- `talosctl etcd leave`, or `etcd remove-member`
   from a survivor when it is already gone -- and then deciding what a cluster does
   when a removal would drop it below quorum. Neither is written.
-- **A machine that is already unreachable is not reclaimed.** The wipe needs the
-  Talos API, so a member that died before it left the inventory has its node object
-  deleted and its disk left as it was. Whoever revives it gets a machine that still
-  believes it is a member. Teardown reports the address it could not reach.
+- **A machine that is already unreachable is not reclaimed, only retried.** The wipe
+  needs the Talos API, so a member that died before it left the inventory keeps its
+  disk as it was, and its node object is kept with it -- that object is the only
+  record the machine exists, so the next run finds the same orphan and tries again.
+  A machine that was merely powered off is wiped on a later run without anyone
+  intervening; one that is dead for good stays in the drift report until it is
+  reclaimed out of band or its node removed by hand.
+- **Nothing exercises the unreachable path.** A member that stops answering is
+  cordoned, has its pods deleted outright, and keeps its node object; none of that is
+  covered by a scenario, because `scale` takes out a healthy worker. Staging it means
+  powering a machine off over Redfish and leaving it off, which sushy can do.
+  `kubernetes.core.k8s_drain` is not what deletes those pods, and cannot be: it
+  builds `V1DeleteOptions` only under `if terminate_grace_period`, so a zero grace
+  period is read as unset and ignored. The pods are deleted directly through
+  `kubernetes.core.k8s` instead, whose `delete_options` reach the API unfiltered.
+- **Nothing reclaims an unreachable machine yet, but the handle for it now exists.**
+  `talos/annotate.yml` records each member's BMC address and system id on its node
+  object, which outlives the machine going dark. Teardown does not read them back:
+  doing so means powering an unreachable machine off over Redfish -- enough on its
+  own to stop it rejoining as a member nobody expects -- or driving the existing
+  boot-and-discover path to bring it up in maintenance mode and wipe it with
+  `talosctl reset --insecure`. Credentials stay out of the annotations, so whatever
+  reads them takes the BMC username and password from the collection's own config.
 - **Nothing asserts the refusal to run on an unreadable cluster.** Teardown stops
   when `baremetal_talos_teardown_enable` is set and the cluster cannot be read, on
   the grounds that taking machines out on a partial answer is guesswork. That guard

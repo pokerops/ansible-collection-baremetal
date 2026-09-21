@@ -1,0 +1,24 @@
+---
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Record BMC coordinates for cluster members
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Annotate the node with the machine's BMC
+      kubernetes.core.k8s:
+        state: patched
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+        definition:
+          metadata:
+            annotations:
+              baremetal.pokerops.io/bmc-address: "{{ baremetal_bmc_address }}"
+              baremetal.pokerops.io/bmc-system-id: "{{ baremetal_bmc_system_id }}"
+      delegate_to: localhost
+      when: baremetal_talos_annotate_enable | bool
