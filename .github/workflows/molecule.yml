@@ -23,6 +23,7 @@ jobs:
           - talos
           - patch
           - minor
+          - scale
     steps:
       - name: Run devbox tests
         uses: pokerops/ansible-utils@master

@@ -1,0 +1,19 @@
+---
+ansible:
+  playbooks:
+    converge: converge.yml
+    side_effect: side_effect.yml
+    verify: ../default/verify.yml
+scenario:
+  name: scale
+  test_sequence:
+    - dependency
+    - prepare
+    - destroy
+    - syntax
+    - create
+    - converge
+    - verify
+    - side_effect
+    - verify
+    - destroy

@@ -55,7 +55,7 @@
           {{ groups['_baremetal_inventory_nodes']
              | map('extract', hostvars, '_verify_node_release') | unique | list }}
 
-    - name: Read the cluster's nodes
+    - name: Query cluster nodes
       kubernetes.core.k8s_info:
         kind: Node
         kubeconfig: "{{ baremetal_kubeconfig }}"
@@ -80,36 +80,31 @@
       kubernetes.core.k8s_info:
         kind: Pod
         kubeconfig: "{{ baremetal_kubeconfig }}"
-      register: _verify_pods
+      register: _baremetal_pod_data
 
     - name: Assert no pod is stuck outside a healthy phase
       ansible.builtin.assert:
-        that:
-          - _unhealthy | length == 0
-        fail_msg: "Pods not Running or Succeeded: {{ _unhealthy | join(', ') }}."
+        that: _pods_ko | length == 0
+        fail_msg: "Pods not Running or Succeeded: {{ _pods_ko | map(attribute='metadata.name') | join(', ') }}."
       vars:
-        _unhealthy: >-
-          {{ _verify_pods.resources
-             | rejectattr('status.phase', 'in', ['Running', 'Succeeded'])
-             | map(attribute='metadata.name') | list }}
+        _pods_all: "{{ _baremetal_pod_data.resources }}"
+        _pods_ko: "{{ _pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}"
 
     - name: Assert every running pod has all its containers ready
       ansible.builtin.assert:
-        that:
-          - _unready == []
+        that: _containers_ko | length == 0
         fail_msg: >-
-          {{ item.metadata.name }} has containers that are not ready
-          ({{ _unready | join(', ') }}).
-      loop: >-
-        {{ _verify_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list }}
+          {{ item.metadata.name }} containers with unexpected status: {{ _containers_ko | join(', ') }}
+      loop: "{{ _pods_ok }}"
       loop_control:
         label: "{{ item.metadata.name }}"
       vars:
-        _unready: >-
-          {{ item.status.containerStatuses | default([])
-             | rejectattr('ready') | map(attribute='name') | list }}
+        _pods_all: "{{ _baremetal_pod_data.resources }}"
+        _pods_ok: "{{ _pods_all | selectattr('status.phase', 'equalto', 'Running') | list }}"
+        _container_statuses: "{{ item.status.containerStatuses | default([]) }}"
+        _containers_ko: "{{ _container_statuses | rejectattr('ready') | map(attribute='name') | list }}"
 
-    - name: Reach the Kubernetes API through the cluster address
+    - name: Wait for Kubernetes API through the cluster address
       ansible.builtin.wait_for:
         host: "{{ baremetal_talos_api_address }}"
         port: 6443

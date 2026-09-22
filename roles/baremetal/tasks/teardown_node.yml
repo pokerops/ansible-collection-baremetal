@@ -1,0 +1,131 @@
+---
+- name: Query cluster nodes
+  kubernetes.core.k8s_info:
+    kind: Node
+    name: "{{ _baremetal_talos_orphan }}"
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+  register: _baremetal_talos_k8s_nodes
+
+- name: Set cluster node facts
+  ansible.builtin.set_fact:
+    _baremetal_talos_orphan_address: "{{ _baremetal_talos_orphan_addr }}"
+  vars:
+    _baremetal_talos_orphan_addr_data: "{{ _baremetal_talos_k8s_nodes.resources | map(attribute='status.addresses') | first | default([], true) }}"
+    _baremetal_talos_orphan_addr_internal: "{{ _baremetal_talos_orphan_addr_data | selectattr('type', 'equalto', 'InternalIP') }}"
+    _baremetal_talos_orphan_addr: "{{ _baremetal_talos_orphan_addr_internal | map(attribute='address') | first | default('', true) }}"
+
+- name: Check whether the member is reachable
+  ansible.builtin.wait_for:
+    host: "{{ _baremetal_talos_orphan_address }}"
+    port: 50000
+    timeout: 30
+  failed_when: false
+  register: _baremetal_teardown_connect
+  when: _baremetal_talos_orphan_address | length > 0
+
+- name: Set member teardown facts
+  ansible.builtin.set_fact:
+    _baremetal_teardown_reachable: "{{ _is_addr and _is_live }}"
+  vars:
+    _is_addr: "{{ _baremetal_talos_orphan_address | length > 0 }}"
+    _is_live: "{{ _baremetal_teardown_connect.msg | default('', true) | length == 0 }}"
+
+- name: Cordon the member
+  kubernetes.core.k8s_drain:
+    name: "{{ _baremetal_talos_orphan }}"
+    state: cordon
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+
+- name: Register the cordon operation
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ _baremetal_talos_orphan }}"
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+    definition:
+      metadata:
+        annotations: "{{ {baremetal_talos_cordon_annotation: 'teardown'} }}"
+
+- name: Move the workloads off the member
+  kubernetes.core.k8s_drain:
+    name: "{{ _baremetal_talos_orphan }}"
+    state: drain
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+    delete_options:
+      delete_emptydir_data: true
+      ignore_daemonsets: true
+      force: true
+      wait_timeout: "{{ baremetal_talos_drain_timeout }}"
+  when: _baremetal_teardown_reachable | bool
+
+# A member that has stopped answering evicts nothing: eviction honours disruption
+# budgets written for workloads that are still running, and waits on a kubelet that
+# is not there to confirm. Its pods are deleted outright instead, with no grace
+# period, which is the only thing that releases them from a node object this run is
+# about to keep -- otherwise they sit Terminating until the node is deleted, and
+# keeping the node is the point.
+- name: Read the pods the member is holding
+  kubernetes.core.k8s_info:
+    kind: Pod
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+    field_selectors:
+      - "spec.nodeName={{ _baremetal_talos_orphan }}"
+  register: _baremetal_teardown_pods
+  when: not (_baremetal_teardown_reachable | bool)
+
+- name: Release the pods the member is holding
+  kubernetes.core.k8s:
+    state: absent
+    kind: Pod
+    name: "{{ item.metadata.name }}"
+    namespace: "{{ item.metadata.namespace }}"
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+    delete_options:
+      gracePeriodSeconds: 0
+  loop: "{{ _baremetal_teardown_pods.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.namespace }}/{{ item.metadata.name }}"
+  # Daemon set pods are left where they are, the way a drain leaves them: deleting
+  # one only has its controller place another on the same dead machine, and that
+  # replacement is Pending rather than merely stale.
+  when:
+    - not (_baremetal_teardown_reachable | bool)
+    - "'DaemonSet' not in (item.metadata.ownerReferences | default([]) | map(attribute='kind') | list)"
+
+- name: Wipe the member from Talos
+  ansible.builtin.command:
+    cmd: >-
+      talosctl reset
+      --graceful=false
+      --reboot
+      --wait=false
+      --talosconfig {{ baremetal_talosconfig }}
+      --endpoints {{ _baremetal_talos_orphan_address }}
+      --nodes {{ _baremetal_talos_orphan_address }}
+  changed_when: true
+  when: _baremetal_teardown_reachable | bool
+
+- name: Wait for the member to stop serving the Talos API
+  ansible.builtin.wait_for:
+    host: "{{ _baremetal_talos_orphan_address }}"
+    port: 50000
+    state: stopped
+    timeout: "{{ baremetal_talos_teardown_timeout }}"
+  when: _baremetal_teardown_reachable | bool
+
+# Only once teardown is confirmed. Deleting it after a wipe that did not happen would
+# leave a machine that still believes it is a member and nothing left to find it by;
+# keeping it means the next run sees the same orphan and tries again.
+- name: Wipe the member from Kubernetes
+  kubernetes.core.k8s:
+    state: absent
+    kind: Node
+    name: "{{ _baremetal_talos_orphan }}"
+    kubeconfig: "{{ baremetal_kubeconfig }}"
+  when: _baremetal_teardown_reachable | bool
+
+- name: Drop node discovery facts
+  ansible.builtin.file:
+    path: "{{ inventory_dir }}/host_vars/{{ _baremetal_talos_orphan }}/discovered.yml"
+    state: absent
+  when: _baremetal_teardown_reachable | bool

@@ -1,0 +1,96 @@
+---
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Tear down orphan nodes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Verify cluster control plane
+      ansible.builtin.assert:
+        that: _baremetal_cluster_readable | bool
+        fail_msg: Unable to query cluster control plane during node teardown request
+      when: baremetal_talos_teardown_enable | bool
+
+    - name: Tear down orphan cluster nodes
+      when: _baremetal_talos_orphans | length > 0
+      block:
+        - name: Report what setting baremetal_talos_teardown_enable would take out
+          ansible.builtin.debug:
+            msg: "Set baremetal_talos_teardown_enable=true to take {{ _baremetal_talos_orphans }} out of the cluster"
+          when: not baremetal_talos_teardown_enable | bool
+
+        - name: Tear down worker nodes
+          when: baremetal_talos_teardown_enable | bool
+          block:
+            - name: Reject control plane teardown requests
+              ansible.builtin.assert:
+                that: _baremetal_talos_orphan_control | length == 0
+                fail_msg: "Invalid control plane teardown operation requested for nodes {{ _baremetal_talos_orphan_control }}"
+
+            - name: Take each member out of the cluster
+              ansible.builtin.include_role:
+                name: pokerops.baremetal.baremetal
+                tasks_from: teardown_node
+              loop_control:
+                loop_var: _baremetal_talos_orphan
+              loop: "{{ _baremetal_talos_orphan_worker }}"
+
+            - name: Wait for every workload to settle
+              kubernetes.core.k8s_info:
+                kind: Pod
+                kubeconfig: "{{ baremetal_kubeconfig }}"
+              register: _baremetal_pod_data
+              until: _pods_ko | length == 0
+              retries: "{{ baremetal_talos_ready_retries }}"
+              delay: "{{ baremetal_talos_ready_delay }}"
+              vars:
+                _pods_all: "{{ _baremetal_pod_data.resources | default([]) }}"
+                _pods_ko: "{{ _pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}"
+
+- name: Return cordoned nodes into the cluster
+  hosts: _baremetal_talos_member
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Query node registration
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      delegate_to: localhost
+      register: _baremetal_member_node
+
+    - name: Set node facts
+      ansible.builtin.set_fact:
+        _baremetal_member_cordon: "{{ _cordon }}"
+      vars:
+        _resources: "{{ _baremetal_member_node.resources }}"
+        _annotations: "{{ _resources | map(attribute='metadata.annotations') | first }}"
+        _cordon: "{{ _annotations[baremetal_talos_cordon_annotation] | default('') }}"
+
+    - name: Uncordon node
+      when: _baremetal_member_cordon == 'teardown'
+      block:
+        - name: Return the member to service
+          kubernetes.core.k8s_drain:
+            name: "{{ inventory_hostname }}"
+            state: uncordon
+            kubeconfig: "{{ baremetal_kubeconfig }}"
+          delegate_to: localhost
+
+        - name: Drop the teardown cordon mark
+          kubernetes.core.k8s:
+            state: patched
+            kind: Node
+            name: "{{ inventory_hostname }}"
+            kubeconfig: "{{ baremetal_kubeconfig }}"
+            definition:
+              metadata:
+                annotations: "{{ {baremetal_talos_cordon_annotation: null} }}"
+          delegate_to: localhost
