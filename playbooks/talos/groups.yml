@@ -108,6 +108,39 @@
   roles:
     - pokerops.baremetal.baremetal
   tasks:
+    - name: Stat cluster talosconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_talosconfig }}"
+      register: _baremetal_cluster_talosconfig
+
+    # A missing kubeconfig is not the same as an unreadable cluster: bootstrap fetches
+    # one further down this same deploy, so refusing here would refuse a condition the
+    # run goes on to fix. Fetch it first and let the refusal stand only for what a
+    # fetch cannot mend -- no credentials to ask with, or a control plane that is not
+    # answering. Tolerated rather than fatal, and a no-op when the file is already
+    # there or the fleet has no cluster yet.
+    - name: Recover cluster kubeconfig
+      ansible.builtin.command:
+        cmd: >-
+          talosctl kubeconfig {{ baremetal_talos_config_directory }}
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ _endpoint }}
+          --nodes {{ _endpoint }}
+        creates: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_cluster_recover
+      failed_when: false
+      # Tolerating the failure would otherwise report a fetch that wrote nothing as a
+      # change, on the one path where the operator is already looking for what broke.
+      changed_when: (_baremetal_cluster_recover.rc | default(1)) == 0
+      vars:
+        _control: "{{ groups['_baremetal_talos_member_control'] | default([]) }}"
+        _endpoint: >-
+          {{ baremetal_talos_api_address if baremetal_talos_api_address | length > 0
+             else (hostvars[_control | first].ansible_host if _control | length > 0 else '') }}
+      when:
+        - _baremetal_cluster_talosconfig.stat.exists
+        - _endpoint | length > 0
+
     - name: Stat cluster kubeconfig
       ansible.builtin.stat:
         path: "{{ baremetal_kubeconfig }}"

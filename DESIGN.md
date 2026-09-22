@@ -91,6 +91,22 @@ the cluster answered at all, because an empty orphan list otherwise means either
 there are none or that nothing could be read. The read is tolerated rather than
 fatal, so a fleet with no cluster yet classifies normally.
 
+A missing kubeconfig is not an unreadable cluster, though, and classification fetches
+one from the talosconfig before concluding anything. Bootstrap fetches a kubeconfig
+further down the same deploy, so a controller that has credentials but no kubeconfig
+-- a cleaned configuration directory, a fresh checkout -- would otherwise be refused
+for a condition the run goes on to fix several plays later. What survives the fetch is
+worth refusing on: a control plane that is not answering, or credentials that are
+gone.
+
+That the credentials might be gone is worth refusing on rather more loudly, and
+`seed.yml` does. Generating configuration mints a cluster CA, and it generates
+whenever the talosconfig is absent, which is right exactly once -- when the fleet has
+no members. With members already running, an absent talosconfig means the credentials
+were lost rather than never issued, and generating a fresh set would issue the
+machines being installed the identity of a cluster that does not exist. They would
+come up healthy, belong to nothing, and never join the cluster that does.
+
 That set is compared against the inventory groups rather than against the groups
 above, because those honour `--limit`. A run limited to one machine would otherwise
 be indistinguishable from an inventory every other member had been taken out of, and
@@ -442,6 +458,12 @@ releases them from a node object this run is about to keep. Daemon set pods are 
 alone, as a drain leaves them: deleting one only has its controller place another on
 the same dead machine.
 
+That deletion goes through `kubernetes.core.k8s` rather than the drain module, and it
+has to. `k8s_drain` builds its `V1DeleteOptions` under `if terminate_grace_period`, so
+a grace period of zero -- the only one that drops a pod from etcd without waiting on a
+kubelet that will never answer -- is read as unset and ignored. `k8s` passes its
+`delete_options` to the API unfiltered.
+
 Putting the host back in the inventory is how the decision to remove it is taken
 back, and teardown acts on that too, lifting the cordon on a member the inventory
 carries again. That half is not gated on `baremetal_talos_teardown_enable`, because
@@ -490,6 +512,16 @@ The `scale` molecule scenario builds the fleet, then points
 `baremetal_talos_worker_group` at a subset -- the harness's way of saying machines
 have left the inventory -- and asserts the cluster is exactly what the inventory kept
 and every node Ready. Pointing it back and running deploy again brings them home.
+
+It drives both halves of that. A machine is powered off over Redfish before the
+inventory drops it, which is the only way to stage a member that has died: everything
+downstream of the reachability probe runs only for a machine that has stopped
+answering. A pod is pinned to it by name first, tolerating everything, so that the
+release has something real to let go of -- the scenario then asserts the node object
+was kept, the machine cordoned and the cordon marked, the pinned pod gone and the
+daemon sets left alone. Powering the machine back on and converging again is what
+proves the retry: the orphan is still there to be found, and this time it can be
+wiped.
 
 ## Verification
 

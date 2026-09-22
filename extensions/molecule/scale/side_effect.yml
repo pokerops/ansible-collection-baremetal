@@ -1,11 +1,408 @@
 ---
-- name: Scale the cluster down to the workers the inventory keeps
+# Scales the cluster down by a worker and back out, through both the path where the
+# machine answers and the path where it does not.
+#
+# The machine is powered off over Redfish before the inventory drops it, which is the
+# only way to stage a member that has died: everything downstream of the reachability
+# probe -- the skipped drain, the pods deleted outright, the cordon, the node object
+# kept rather than deleted -- runs only for a machine that has stopped answering.
+# Powering it back on and converging again is what proves the retry: the orphan is
+# still there to be found, and this time it can be wiped.
+#
+# Pointing baremetal_talos_worker_group at talos_worker_core is this harness's way of
+# saying the machines in talos_worker_scale have left the inventory; pointing it back
+# is how they return.
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+# Both halves of what teardown does when it cannot see the cluster, staged by taking
+# the credentials away rather than the control plane: the guard branches on whether
+# the cluster answered, not on why it did not, and a cluster with no control plane
+# left is an expensive way to reach the same fact.
+- name: Confirm a missing kubeconfig is fetched rather than refused
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Drop the cluster kubeconfig
+      ansible.builtin.file:
+        path: "{{ baremetal_kubeconfig }}"
+        state: absent
+
+    - name: Converge membership with the kubeconfig gone
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook {{ _inventories }}
+          --extra-vars baremetal_talos_teardown_enable=true
+          pokerops.baremetal.talos.teardown
+      register: _scale_recovered
+      changed_when: false
+      vars:
+        _inventories: >-
+          {{ ansible_inventory_sources | map('regex_replace', '^', '--inventory ') | join(' ') }}
+
+    - name: Stat the cluster kubeconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_kubeconfig }}"
+      register: _scale_kubeconfig
+
+    - name: Assert the kubeconfig was fetched back from the talosconfig
+      ansible.builtin.assert:
+        that:
+          - _scale_kubeconfig.stat.exists
+        fail_msg: >-
+          {{ baremetal_kubeconfig }} was not recreated. A kubeconfig that has been
+          cleaned up is recoverable from the talosconfig, and a run that refuses it
+          refuses a condition it could have fixed.
+
+- name: Confirm teardown refuses a cluster it cannot reach
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    _scale_saved: "{{ ephemeral_directory }}/credentials"
+  tasks:
+    - name: Take the cluster credentials away
+      block:
+        - name: Create the credential backup directory
+          ansible.builtin.file:
+            path: "{{ _scale_saved }}"
+            state: directory
+            mode: "0700"
+
+        - name: Save the cluster credentials
+          ansible.builtin.copy:
+            src: "{{ baremetal_talos_config_directory }}/{{ item }}"
+            dest: "{{ _scale_saved }}/{{ item }}"
+            mode: "0600"
+            remote_src: true
+          loop:
+            - talosconfig
+            - kubeconfig
+
+        - name: Remove the cluster credentials
+          ansible.builtin.file:
+            path: "{{ baremetal_talos_config_directory }}/{{ item }}"
+            state: absent
+          loop:
+            - talosconfig
+            - kubeconfig
+
+        - name: Converge membership with no credentials to read the cluster
+          ansible.builtin.command:
+            cmd: >-
+              ansible-playbook {{ _inventories }}
+              --extra-vars baremetal_talos_teardown_enable=true
+              pokerops.baremetal.talos.teardown
+          register: _scale_refused
+          changed_when: false
+          failed_when: _scale_refused.rc == 0
+          vars:
+            _inventories: >-
+              {{ ansible_inventory_sources | map('regex_replace', '^', '--inventory ') | join(' ') }}
+
+        - name: Assert the run stopped at the guard rather than somewhere else
+          ansible.builtin.assert:
+            that:
+              - "'Verify cluster control plane' in _output"
+              - "'Take each member out of the cluster' not in _output"
+            fail_msg: >-
+              Teardown failed without credentials, but not at the guard: its output
+              carries no refusal, so the failure came from somewhere else.
+          vars:
+            _output: "{{ _scale_refused.stdout | default('') }}"
+
+        # The same missing credentials reach a second refusal, further down a deploy:
+        # seeding would generate a fresh cluster CA and issue it to whatever is being
+        # installed. Reached with teardown off, since otherwise the guard above stops
+        # the run first, and through groups so that seeding can see the members.
+        - name: Seed a fleet whose credentials have gone missing
+          ansible.builtin.command:
+            cmd: >-
+              ansible-playbook {{ _inventories }}
+              pokerops.baremetal.talos.groups pokerops.baremetal.talos.seed
+          register: _scale_reseed
+          changed_when: false
+          failed_when: _scale_reseed.rc == 0
+          vars:
+            _inventories: >-
+              {{ ansible_inventory_sources | map('regex_replace', '^', '--inventory ') | join(' ') }}
+
+        - name: Assert the seed stopped before minting a second cluster
+          ansible.builtin.assert:
+            that:
+              - "'Assert the cluster credentials outlived its members' in _output"
+              - "'Generate cluster configuration' not in _output"
+            fail_msg: >-
+              Seeding a fleet with members but no talosconfig failed somewhere other
+              than the credentials guard. Reaching the generation would mint a new
+              cluster CA and hand it to the machines being installed.
+          vars:
+            _output: "{{ _scale_reseed.stdout | default('') }}"
+      always:
+        - name: Put the cluster credentials back
+          ansible.builtin.copy:
+            src: "{{ _scale_saved }}/{{ item }}"
+            dest: "{{ baremetal_talos_config_directory }}/{{ item }}"
+            mode: "0600"
+            remote_src: true
+          loop:
+            - talosconfig
+            - kubeconfig
+
+- name: Give the machine a workload that will not leave on its own
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Record the machine the inventory is about to drop
+      ansible.builtin.set_fact:
+        _scale_machine: "{{ groups['talos_worker_scale'] | first }}"
+
+    # Bound by name rather than scheduled, and tolerating everything, so nothing moves
+    # it once the machine stops answering. This is the case teardown has to delete
+    # outright: Kubernetes will not reschedule a pod while the node object stands,
+    # because it cannot confirm the old one is gone.
+    - name: Pin a pod to the machine
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+        definition:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: scale-hostage
+            namespace: default
+          spec:
+            nodeName: "{{ _scale_machine }}"
+            tolerations:
+              - operator: Exists
+            containers:
+              - name: pause
+                image: registry.k8s.io/pause:3.9
+
+    - name: Wait for the pod to run on it
+      kubernetes.core.k8s_info:
+        kind: Pod
+        name: scale-hostage
+        namespace: default
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _scale_hostage
+      until: >-
+        _scale_hostage.resources | default([]) | map(attribute='status.phase')
+        | first | default('') == 'Running'
+      retries: "{{ baremetal_talos_ready_retries }}"
+      delay: "{{ baremetal_talos_ready_delay }}"
+
+- name: Take the machine off the air
+  hosts: talos_worker_scale
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Power the machine off
+      community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: Systems
+        command: PowerForceOff
+      register: _scale_power_off
+      until: _scale_power_off is not failed
+      retries: "{{ baremetal_bmc_retries }}"
+      delay: "{{ baremetal_bmc_retry_delay }}"
+
+    - name: Wait for the machine to stop serving the Talos API
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 50000
+        state: stopped
+        timeout: "{{ baremetal_talos_teardown_timeout }}"
+
+- name: Converge membership while the machine is unreachable
   ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
   vars:
     baremetal_talos_worker_group: talos_worker_core
     baremetal_talos_teardown_enable: true
 
-- name: Confirm the cluster is made of the machines the inventory kept
+- name: Confirm the unreachable member was kept rather than wiped
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Query the node the unreachable member left behind
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ _scale_machine }}"
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _scale_kept
+
+    - name: Assert the node object was kept
+      ansible.builtin.assert:
+        that:
+          - _scale_kept.resources | default([]) | length == 1
+        fail_msg: >-
+          {{ _scale_machine }} is gone from the cluster. A member that could not be
+          wiped has to keep its node object, or nothing is left to find it by.
+
+    - name: Assert the member was cordoned and the cordon marked as ours
+      ansible.builtin.assert:
+        that:
+          - _node.spec.unschedulable | default(false) | bool
+          - _annotations[baremetal_talos_cordon_annotation] | default('') == 'teardown'
+        fail_msg: >-
+          {{ _scale_machine }} is unschedulable={{ _node.spec.unschedulable | default(false) }}
+          and marked '{{ _annotations[baremetal_talos_cordon_annotation] | default('') }}'.
+          An unreachable member has to be held out of service, and the cordon has to be
+          attributable, or returning it later cannot tell it from one placed by hand.
+      vars:
+        _node: "{{ _scale_kept.resources | first }}"
+        _annotations: "{{ _node.metadata.annotations | default({}, true) }}"
+
+    - name: Query the pods the unreachable member is still holding
+      kubernetes.core.k8s_info:
+        kind: Pod
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+        field_selectors:
+          - "spec.nodeName={{ _scale_machine }}"
+      register: _scale_held
+
+    - name: Assert the pinned pod was released
+      ansible.builtin.assert:
+        that:
+          - _hostage | length == 0
+        fail_msg: >-
+          scale-hostage is still bound to {{ _scale_machine }}. A pod on a machine that
+          has stopped answering is only released by deleting it outright, and nothing
+          else will do it while the node object stands.
+      vars:
+        _hostage: >-
+          {{ _scale_held.resources | default([])
+             | selectattr('metadata.name', 'equalto', 'scale-hostage') | list }}
+
+    # Anything left has to be a daemon set's, which teardown leaves alone on purpose:
+    # deleting one only has its controller place another on the same dead machine.
+    - name: Assert whatever is left belongs to a daemon set
+      ansible.builtin.assert:
+        that:
+          - "'DaemonSet' in (item.metadata.ownerReferences | default([]) | map(attribute='kind') | list)"
+        fail_msg: >-
+          {{ item.metadata.namespace }}/{{ item.metadata.name }} is still bound to
+          {{ _scale_machine }} and nothing owns it but
+          {{ item.metadata.ownerReferences | default([]) | map(attribute='kind') | join(', ') | default('nothing', true) }}.
+      loop: "{{ _scale_held.resources | default([]) }}"
+      loop_control:
+        label: "{{ item.metadata.namespace }}/{{ item.metadata.name }}"
+
+    - name: Query cluster nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _scale_during
+
+    - name: Assert every member that still answers is Ready
+      ansible.builtin.assert:
+        that:
+          - _ready == ['True']
+        fail_msg: >-
+          {{ item.metadata.name }} is not Ready
+          (Ready={{ _ready | join(',') | default('absent', true) }}) while the cluster
+          carried an unreachable member.
+      loop: >-
+        {{ _scale_during.resources | rejectattr('metadata.name', 'equalto', _scale_machine) | list }}
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      vars:
+        _ready: >-
+          {{ item.status.conditions | selectattr('type', 'equalto', 'Ready')
+             | map(attribute='status') | list }}
+
+# Converging twice over a machine that is still dead is the case of one that never
+# comes back: the run has to leave it exactly where the first pass did, rather than
+# eventually giving up and deleting the node that is the only record of it.
+- name: Converge membership while the machine is still unreachable
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
+  vars:
+    baremetal_talos_worker_group: talos_worker_core
+    baremetal_talos_teardown_enable: true
+
+- name: Confirm a second pass left the member where the first one did
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Query the node the unreachable member still holds
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ _scale_machine }}"
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _scale_still_kept
+
+    - name: Assert the node object survived a second convergence
+      ansible.builtin.assert:
+        that:
+          - _scale_still_kept.resources | default([]) | length == 1
+          - _node.spec.unschedulable | default(false) | bool
+          - _annotations[baremetal_talos_cordon_annotation] | default('') == 'teardown'
+        fail_msg: >-
+          After converging twice over an unreachable {{ _scale_machine }}, the cluster
+          holds {{ _scale_still_kept.resources | default([]) | length }} node for it,
+          unschedulable={{ _node.spec.unschedulable | default(false) }},
+          marked '{{ _annotations[baremetal_talos_cordon_annotation] | default('') }}'.
+          A machine nobody revives has to keep being found, not quietly forgotten.
+      vars:
+        _node: "{{ _scale_still_kept.resources | first | default({}, true) }}"
+        _annotations: "{{ _node.metadata.annotations | default({}, true) }}"
+
+- name: Bring the machine back
+  hosts: talos_worker_scale
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Power the machine on
+      community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: Systems
+        command: PowerOn
+      register: _scale_power_on
+      until: _scale_power_on is not failed
+      retries: "{{ baremetal_bmc_retries }}"
+      delay: "{{ baremetal_bmc_retry_delay }}"
+
+    # Still installed: the wipe never ran, so the machine boots the Talos it already
+    # had and answers at the address it was configured with.
+    - name: Wait for the machine to serve the Talos API again
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 50000
+        timeout: "{{ baremetal_talos_api_timeout }}"
+
+- name: Converge membership again now the machine answers
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
+  vars:
+    baremetal_talos_worker_group: talos_worker_core
+    baremetal_talos_teardown_enable: true
+
+- name: Confirm the retry finished what the first run could not
   hosts: localhost
   connection: local
   gather_facts: false
@@ -18,12 +415,12 @@
         kubeconfig: "{{ baremetal_kubeconfig }}"
       register: _scale_scaled_down
 
-    - name: Assert the workers the inventory dropped left, and nothing else did
+    - name: Assert the member the inventory dropped left, and nothing else did
       ansible.builtin.assert:
         that:
           - _joined == _kept
         fail_msg: >-
-          After scaling down, the cluster is
+          After the retry, the cluster is
           {{ _joined | join(', ') | default('empty', true) }} rather than
           {{ _kept | join(', ') }}.
       vars:
@@ -47,7 +444,7 @@
           {{ item.status.conditions | selectattr('type', 'equalto', 'Ready')
              | map(attribute='status') | list }}
 
-    - name: Assert the machines that left stopped serving the Talos API
+    - name: Assert the machine that left stopped serving the Talos API
       ansible.builtin.wait_for:
         host: "{{ hostvars[item].ansible_host }}"
         port: 50000
@@ -58,7 +455,7 @@
 - name: Scale the cluster back out
   ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
 
-- name: Confirm the machines the inventory carries again rejoined
+- name: Confirm the machine the inventory carries again rejoined
   hosts: localhost
   connection: local
   gather_facts: false

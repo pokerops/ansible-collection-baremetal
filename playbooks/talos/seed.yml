@@ -1,4 +1,35 @@
 ---
+# Generating configuration mints a cluster CA, and the generation below runs whenever
+# the talosconfig is absent. That is right exactly once, when the fleet has no members
+# yet. With members already running, a missing talosconfig means the credentials have
+# been lost rather than never issued, and generating a fresh set would hand machines
+# being installed the identity of a cluster that does not exist -- they would come up
+# healthy, belong to nothing, and never join the cluster that does.
+- name: Verify cluster credentials
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Stat cluster talosconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_talosconfig }}"
+      register: _baremetal_seed_talosconfig
+
+    - name: Assert the cluster credentials outlived its members
+      ansible.builtin.assert:
+        that:
+          - _baremetal_seed_talosconfig.stat.exists or _members | length == 0
+        fail_msg: >-
+          The cluster already has members ({{ _members | join(', ') }}) but
+          {{ baremetal_talosconfig }} is missing. Generating configuration now would
+          mint a new cluster CA and issue it to the machines being installed, which
+          could never join the cluster that is already running. Restore the
+          configuration directory, or take the existing members out first.
+      vars:
+        _members: "{{ groups['_baremetal_talos_member'] | default([]) }}"
+
 - name: Generate Talos cluster configuration
   hosts: _baremetal_talos_install_control
   connection: local
