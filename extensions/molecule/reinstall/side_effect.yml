@@ -1,0 +1,98 @@
+---
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Record what the machine looks like before it is rebuilt
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Record the machine to rebuild
+      ansible.builtin.set_fact:
+        _reinstall_machine: "{{ groups['talos_worker_scale'] | first }}"
+
+    - name: Query the node the machine joined as
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ _reinstall_machine }}"
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _reinstall_before
+
+    - name: Record the boot the machine is running
+      ansible.builtin.set_fact:
+        _reinstall_boot_before: >-
+          {{ _reinstall_before.resources | default([])
+             | map(attribute='status.nodeInfo.bootID') | first | default('', true) }}
+
+    - name: Assert the machine is a member with a boot to compare against
+      ansible.builtin.assert:
+        that:
+          - _reinstall_boot_before | length > 0
+        fail_msg: >-
+          {{ _reinstall_machine }} reports no bootID, so there is nothing to tell a
+          rebuilt machine apart from one that was left alone.
+
+- name: Rebuild the machine from installer media
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
+  vars:
+    baremetal_reinstall: "{{ inventory_hostname in groups['talos_worker_scale'] }}"
+
+- name: Confirm the machine was rebuilt and rejoined
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Query cluster nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _reinstall_after
+
+    - name: Assert the cluster is still the whole inventory
+      ansible.builtin.assert:
+        that:
+          - _joined == _expected
+        fail_msg: >-
+          After the rebuild the cluster is
+          {{ _joined | join(', ') | default('empty', true) }} rather than
+          {{ _expected | join(', ') }}. A machine forced back onto the install path
+          has to come back to the cluster it left.
+      vars:
+        _joined: "{{ _reinstall_after.resources | map(attribute='metadata.name') | sort }}"
+        _expected: >-
+          {{ ((groups['talos_controlplane'] | default([])) + (groups['talos_worker'] | default([]))) | sort }}
+
+    - name: Assert the machine came up on a different boot
+      ansible.builtin.assert:
+        that:
+          - _boot_after | length > 0
+          - _boot_after != _reinstall_boot_before
+        fail_msg: >-
+          {{ _reinstall_machine }} reports boot '{{ _boot_after }}', the same one it
+          was running before. baremetal_reinstall left it alone rather than taking it
+          through the install path.
+      vars:
+        _boot_after: >-
+          {{ _reinstall_after.resources
+             | selectattr('metadata.name', 'equalto', _reinstall_machine)
+             | map(attribute='status.nodeInfo.bootID') | first | default('', true) }}
+
+    - name: Assert every node is Ready
+      ansible.builtin.assert:
+        that:
+          - _ready == ['True']
+        fail_msg: >-
+          {{ item.metadata.name }} is not Ready
+          (Ready={{ _ready | join(',') | default('absent', true) }}) after a machine
+          was rebuilt.
+      loop: "{{ _reinstall_after.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      vars:
+        _ready: >-
+          {{ item.status.conditions | selectattr('type', 'equalto', 'Ready')
+             | map(attribute='status') | list }}

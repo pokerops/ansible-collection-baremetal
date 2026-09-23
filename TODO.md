@@ -71,17 +71,3 @@ already installs. What is not covered yet:
   and neither is a scenario: `scale` stages its machine from `talos_worker_scale`, so
   covering this needs the control plane split the same way and a cluster that can
   lose a member without losing quorum.
-- **Decide how long an orphan nobody will revive should keep being reported.** A
-  machine that stays unreachable is named by every run, for ever, because the node
-  object it cannot be wiped through is also the only record it exists. That is the
-  right answer while someone might still fix it and the wrong one once nobody will,
-  and nothing distinguishes the two. Whatever settles it wants a way to say "this one
-  is gone, stop asking" that is not just deleting the node by hand.
-- **Nothing reclaims an unreachable machine yet, but the handle for it now exists.**
-  `talos/annotate.yml` records each member's BMC address and system id on its node
-  object, which outlives the machine going dark. Teardown does not read them back:
-  doing so means powering an unreachable machine off over Redfish -- enough on its
-  own to stop it rejoining as a member nobody expects -- or driving the existing
-  boot-and-discover path to bring it up in maintenance mode and wipe it with
-  `talosctl reset --insecure`. Credentials stay out of the annotations, so whatever
-  reads them takes the BMC username and password from the collection's own config.

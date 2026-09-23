@@ -58,12 +58,26 @@ already provisioned and joins `_baremetal_talos_member`; everything else joins
 `_baremetal_talos_install`. Control plane and worker groups are derived the same way,
 so each play targets the exact set it applies to.
 
-This matters because booting installer media at a machine that already has Talos on
-disk halts it rather than reinstalling it -- `talos.halt_if_installed=1` -- which
-took a live six-node cluster down once. Every install-path play targets the install
-group, so a re-run against a built cluster finds no hosts for them.
+"Everything else" covers a machine whose install has broken as well as one that was
+never installed, and that is deliberate: both are machines the fleet cannot talk to,
+and both want the same treatment. An inventory host whose Talos no longer comes up is
+booted from media and rebuilt by an ordinary deploy, without anyone asking for it --
+installer media does not care what is on the disk. A machine that will not boot at
+all is a different thing entirely, and nothing here reaches it; it needs hands.
 
-`baremetal_reinstall=true` forces machines back onto the install path.
+This matters because pointing a machine at installer media and powering it off to get
+there takes it out of service, whatever the media then decides to do. Doing that to a
+fleet that was already built took a live six-node cluster down once. Every
+install-path play targets the install group, so a re-run against a built cluster
+finds no hosts for them and no running machine is interrupted.
+
+`baremetal_reinstall=true` forces machines back onto the install path, which is the
+one way a machine that still has Talos on disk is deliberately booted from media. It
+is read per host, so templating it against a group rebuilds one machine rather than
+the fleet -- rebuilding every machine at once would take etcd with it. The `reinstall`
+scenario does exactly that to a healthy member, which is also the only place the
+collection finds out what its own media does when it lands on an installed disk:
+discovery finds the machine in maintenance mode, or times out waiting for it.
 
 The classification tasks are marked `changed_when: false`. `group_by` reports changed
 unconditionally, but it only binds hosts to groups and touches nothing on a managed
@@ -487,6 +501,27 @@ the only place membership is declared. Credentials are deliberately not written 
 an address and a system id are identifiers, while the username and password are
 fleet-wide secrets and a node annotation is readable by anything with cluster read
 access.
+
+`baremetal_talos_reclaim_enable` is what reads them back. A member that has stopped
+answering is usually a machine that is off, so teardown powers it on over that BMC and
+waits before concluding it cannot be wiped. It is gated separately from teardown and
+defaults off, because the fleet's desired state says nothing about a machine's power:
+dropping a host from the inventory asks for it to leave the cluster, not for anyone to
+touch its power. The wait is tolerated, so a machine that does not come back leaves
+the run exactly where it would have been, holding its node object for the next one to
+find. What this does not reach is a machine whose installed system no longer boots --
+that needs maintenance mode, and the media question above it.
+
+`baremetal_talos_unregister` is the end of that ladder. Retention is right while
+someone might still fix the machine and wrong once nobody will, and nothing in a
+cluster can tell those apart -- it is a fact about the world, not about the fleet. So
+it is asked for rather than inferred, and a clock is deliberately not the instrument:
+expiring an orphan after so many days would stop the reporting without making the
+machine any safer, which is the failure retention exists to prevent. Set, it deletes
+members that could not be wiped and stops naming them; members that can be wiped are
+wiped as before. What it gives up is everything: the disk keeps its cluster
+credentials, and the node object carrying the address and the BMC annotation goes with
+it, so nothing can find that machine again.
 
 Working out which machines those are belongs to classification rather than to
 teardown, because it is the same question the install and member groups answer --
