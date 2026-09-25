@@ -30,10 +30,12 @@
 - name: Reclaim the member over its BMC
   when:
     - baremetal_talos_reclaim_enable | bool
-    - not (_is_live | bool)
+    - not (_answered | bool)
     - _baremetal_talos_orphan_bmc | length > 0
   vars:
-    _is_live: "{{ _baremetal_teardown_connect.msg | default('', true) | length == 0 }}"
+    _answered: >-
+      {{ _baremetal_teardown_connect.elapsed is defined
+         and _baremetal_teardown_connect.msg is not defined }}
   block:
     - name: Power the member on
       community.general.redfish_command:
@@ -55,15 +57,18 @@
         port: 50000
         timeout: "{{ baremetal_talos_reclaim_timeout }}"
       failed_when: false
-      register: _baremetal_teardown_connect
+      register: _baremetal_teardown_reconnect
       when: _baremetal_talos_orphan_address | length > 0
 
 - name: Set member teardown facts
   ansible.builtin.set_fact:
     _baremetal_teardown_reachable: "{{ _is_addr and _is_live }}"
   vars:
+    _probe: >-
+      {{ _baremetal_teardown_reconnect if _baremetal_teardown_reconnect.elapsed is defined
+         else _baremetal_teardown_connect }}
     _is_addr: "{{ _baremetal_talos_orphan_address | length > 0 }}"
-    _is_live: "{{ _baremetal_teardown_connect.msg | default('', true) | length == 0 }}"
+    _is_live: "{{ _probe.elapsed is defined and _probe.msg is not defined }}"
 
 - name: Cordon the member
   kubernetes.core.k8s_drain:
