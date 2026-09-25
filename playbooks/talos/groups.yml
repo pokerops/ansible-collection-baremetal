@@ -108,7 +108,45 @@
   roles:
     - pokerops.baremetal.baremetal
   tasks:
+    - name: Stat cluster talosconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_talosconfig }}"
+      register: _baremetal_cluster_talosconfig
+
     - name: Stat cluster kubeconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_cluster_kubeconfig_found
+
+    # A missing kubeconfig is not the same as an unreadable cluster: bootstrap fetches
+    # one further down this same deploy, so refusing here would refuse a condition the
+    # run goes on to fix. Fetch it first and let the refusal stand only for what a
+    # fetch cannot mend -- no credentials to ask with, or a control plane that is not
+    # answering. Tolerated rather than fatal, and skipped outright when the file is
+    # already there, which is what keeps a deploy reporting no change on a second run:
+    # `creates` would let the task run and report one, because a command it declines to
+    # execute still answers rc 0.
+    - name: Recover cluster kubeconfig
+      ansible.builtin.command:
+        cmd: >-
+          talosctl kubeconfig {{ baremetal_talos_config_directory }}
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ _endpoint }}
+          --nodes {{ _endpoint }}
+      register: _baremetal_cluster_recover
+      failed_when: false
+      changed_when: (_baremetal_cluster_recover.rc | default(1)) == 0
+      vars:
+        _control: "{{ groups['_baremetal_talos_member_control'] | default([]) }}"
+        _endpoint: >-
+          {{ baremetal_talos_api_address if baremetal_talos_api_address | length > 0
+             else (hostvars[_control | first].ansible_host if _control | length > 0 else '') }}
+      when:
+        - not _baremetal_cluster_kubeconfig_found.stat.exists
+        - _baremetal_cluster_talosconfig.stat.exists
+        - _endpoint | length > 0
+
+    - name: Stat the recovered cluster kubeconfig
       ansible.builtin.stat:
         path: "{{ baremetal_kubeconfig }}"
       register: _baremetal_cluster_kubeconfig

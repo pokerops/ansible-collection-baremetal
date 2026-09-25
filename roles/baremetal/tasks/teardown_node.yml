@@ -9,7 +9,11 @@
 - name: Set cluster node facts
   ansible.builtin.set_fact:
     _baremetal_talos_orphan_address: "{{ _baremetal_talos_orphan_addr }}"
+    _baremetal_talos_orphan_bmc: "{{ _baremetal_talos_orphan_annotations['baremetal.pokerops.io/bmc-address'] | default('') }}"
+    _baremetal_talos_orphan_system: "{{ _baremetal_talos_orphan_annotations['baremetal.pokerops.io/bmc-system-id'] | default('') }}"
   vars:
+    _baremetal_talos_orphan_node: "{{ _baremetal_talos_k8s_nodes.resources | first | default({}, true) }}"
+    _baremetal_talos_orphan_annotations: "{{ _baremetal_talos_orphan_node.metadata.annotations | default({}, true) }}"
     _baremetal_talos_orphan_addr_data: "{{ _baremetal_talos_k8s_nodes.resources | map(attribute='status.addresses') | first | default([], true) }}"
     _baremetal_talos_orphan_addr_internal: "{{ _baremetal_talos_orphan_addr_data | selectattr('type', 'equalto', 'InternalIP') }}"
     _baremetal_talos_orphan_addr: "{{ _baremetal_talos_orphan_addr_internal | map(attribute='address') | first | default('', true) }}"
@@ -23,12 +27,48 @@
   register: _baremetal_teardown_connect
   when: _baremetal_talos_orphan_address | length > 0
 
+- name: Reclaim the member over its BMC
+  when:
+    - baremetal_talos_reclaim_enable | bool
+    - not (_answered | bool)
+    - _baremetal_talos_orphan_bmc | length > 0
+  vars:
+    _answered: >-
+      {{ _baremetal_teardown_connect.elapsed is defined
+         and _baremetal_teardown_connect.msg is not defined }}
+  block:
+    - name: Power the member on
+      community.general.redfish_command:
+        baseuri: "{{ _baremetal_talos_orphan_bmc }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ _baremetal_talos_orphan_system }}"
+        category: Systems
+        command: PowerOn
+      register: _baremetal_reclaim_power
+      until: _baremetal_reclaim_power is not failed
+      retries: "{{ baremetal_bmc_retries }}"
+      delay: "{{ baremetal_bmc_retry_delay }}"
+
+    - name: Wait for the member to answer again
+      ansible.builtin.wait_for:
+        host: "{{ _baremetal_talos_orphan_address }}"
+        port: 50000
+        timeout: "{{ baremetal_talos_reclaim_timeout }}"
+      failed_when: false
+      register: _baremetal_teardown_reconnect
+      when: _baremetal_talos_orphan_address | length > 0
+
 - name: Set member teardown facts
   ansible.builtin.set_fact:
     _baremetal_teardown_reachable: "{{ _is_addr and _is_live }}"
   vars:
+    _probe: >-
+      {{ _baremetal_teardown_reconnect if _baremetal_teardown_reconnect.elapsed is defined
+         else _baremetal_teardown_connect }}
     _is_addr: "{{ _baremetal_talos_orphan_address | length > 0 }}"
-    _is_live: "{{ _baremetal_teardown_connect.msg | default('', true) | length == 0 }}"
+    _is_live: "{{ _probe.elapsed is defined and _probe.msg is not defined }}"
 
 - name: Cordon the member
   kubernetes.core.k8s_drain:
@@ -58,12 +98,6 @@
       wait_timeout: "{{ baremetal_talos_drain_timeout }}"
   when: _baremetal_teardown_reachable | bool
 
-# A member that has stopped answering evicts nothing: eviction honours disruption
-# budgets written for workloads that are still running, and waits on a kubelet that
-# is not there to confirm. Its pods are deleted outright instead, with no grace
-# period, which is the only thing that releases them from a node object this run is
-# about to keep -- otherwise they sit Terminating until the node is deleted, and
-# keeping the node is the point.
 - name: Read the pods the member is holding
   kubernetes.core.k8s_info:
     kind: Pod
@@ -113,19 +147,33 @@
     timeout: "{{ baremetal_talos_teardown_timeout }}"
   when: _baremetal_teardown_reachable | bool
 
-# Only once teardown is confirmed. Deleting it after a wipe that did not happen would
-# leave a machine that still believes it is a member and nothing left to find it by;
-# keeping it means the next run sees the same orphan and tries again.
+# Saying out loud what is about to be given up, because nothing else will: the disk
+# keeps its cluster credentials, and the node object going with it takes the address
+# and the BMC annotation that were the only way left to reach the machine.
+- name: Report the member being unregistered unwiped
+  ansible.builtin.debug:
+    msg: >-
+      {{ _baremetal_talos_orphan }} is being removed from the cluster without being
+      wiped. Its disk still holds cluster credentials, and the node object recording
+      how to reach it goes too, so nothing here will find the machine again.
+  when:
+    - not (_baremetal_teardown_reachable | bool)
+    - baremetal_talos_unregister | bool
+
+# Once teardown is confirmed, or once someone has said the machine is not coming back.
+# Deleting it after a wipe that did not happen otherwise leaves a machine that still
+# believes it is a member and nothing left to find it by; keeping it means the next
+# run sees the same orphan and tries again.
 - name: Wipe the member from Kubernetes
   kubernetes.core.k8s:
     state: absent
     kind: Node
     name: "{{ _baremetal_talos_orphan }}"
     kubeconfig: "{{ baremetal_kubeconfig }}"
-  when: _baremetal_teardown_reachable | bool
+  when: _baremetal_teardown_reachable | bool or baremetal_talos_unregister | bool
 
 - name: Drop node discovery facts
   ansible.builtin.file:
     path: "{{ inventory_dir }}/host_vars/{{ _baremetal_talos_orphan }}/discovered.yml"
     state: absent
-  when: _baremetal_teardown_reachable | bool
+  when: _baremetal_teardown_reachable | bool or baremetal_talos_unregister | bool

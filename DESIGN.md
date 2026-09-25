@@ -58,12 +58,26 @@ already provisioned and joins `_baremetal_talos_member`; everything else joins
 `_baremetal_talos_install`. Control plane and worker groups are derived the same way,
 so each play targets the exact set it applies to.
 
-This matters because booting installer media at a machine that already has Talos on
-disk halts it rather than reinstalling it -- `talos.halt_if_installed=1` -- which
-took a live six-node cluster down once. Every install-path play targets the install
-group, so a re-run against a built cluster finds no hosts for them.
+"Everything else" covers a machine whose install has broken as well as one that was
+never installed, and that is deliberate: both are machines the fleet cannot talk to,
+and both want the same treatment. An inventory host whose Talos no longer comes up is
+booted from media and rebuilt by an ordinary deploy, without anyone asking for it --
+installer media does not care what is on the disk. A machine that will not boot at
+all is a different thing entirely, and nothing here reaches it; it needs hands.
 
-`baremetal_reinstall=true` forces machines back onto the install path.
+This matters because pointing a machine at installer media and powering it off to get
+there takes it out of service, whatever the media then decides to do. Doing that to a
+fleet that was already built took a live six-node cluster down once. Every
+install-path play targets the install group, so a re-run against a built cluster
+finds no hosts for them and no running machine is interrupted.
+
+`baremetal_reinstall=true` forces machines back onto the install path, which is the
+one way a machine that still has Talos on disk is deliberately booted from media. It
+is read per host, so templating it against a group rebuilds one machine rather than
+the fleet -- rebuilding every machine at once would take etcd with it. The `reinstall`
+scenario does exactly that to a healthy member, which is also the only place the
+collection finds out what its own media does when it lands on an installed disk:
+discovery finds the machine in maintenance mode, or times out waiting for it.
 
 The classification tasks are marked `changed_when: false`. `group_by` reports changed
 unconditionally, but it only binds hosts to groups and touches nothing on a managed
@@ -90,6 +104,22 @@ than the group the host used to sit in. `_baremetal_cluster_readable` records wh
 the cluster answered at all, because an empty orphan list otherwise means either that
 there are none or that nothing could be read. The read is tolerated rather than
 fatal, so a fleet with no cluster yet classifies normally.
+
+A missing kubeconfig is not an unreadable cluster, though, and classification fetches
+one from the talosconfig before concluding anything. Bootstrap fetches a kubeconfig
+further down the same deploy, so a controller that has credentials but no kubeconfig
+-- a cleaned configuration directory, a fresh checkout -- would otherwise be refused
+for a condition the run goes on to fix several plays later. What survives the fetch is
+worth refusing on: a control plane that is not answering, or credentials that are
+gone.
+
+That the credentials might be gone is worth refusing on rather more loudly, and
+`seed.yml` does. Generating configuration mints a cluster CA, and it generates
+whenever the talosconfig is absent, which is right exactly once -- when the fleet has
+no members. With members already running, an absent talosconfig means the credentials
+were lost rather than never issued, and generating a fresh set would issue the
+machines being installed the identity of a cluster that does not exist. They would
+come up healthy, belong to nothing, and never join the cluster that does.
 
 That set is compared against the inventory groups rather than against the groups
 above, because those honour `--limit`. A run limited to one machine would otherwise
@@ -442,6 +472,12 @@ releases them from a node object this run is about to keep. Daemon set pods are 
 alone, as a drain leaves them: deleting one only has its controller place another on
 the same dead machine.
 
+That deletion goes through `kubernetes.core.k8s` rather than the drain module, and it
+has to. `k8s_drain` builds its `V1DeleteOptions` under `if terminate_grace_period`, so
+a grace period of zero -- the only one that drops a pod from etcd without waiting on a
+kubelet that will never answer -- is read as unset and ignored. `k8s` passes its
+`delete_options` to the API unfiltered.
+
 Putting the host back in the inventory is how the decision to remove it is taken
 back, and teardown acts on that too, lifting the cordon on a member the inventory
 carries again. That half is not gated on `baremetal_talos_teardown_enable`, because
@@ -465,6 +501,27 @@ the only place membership is declared. Credentials are deliberately not written 
 an address and a system id are identifiers, while the username and password are
 fleet-wide secrets and a node annotation is readable by anything with cluster read
 access.
+
+`baremetal_talos_reclaim_enable` is what reads them back. A member that has stopped
+answering is usually a machine that is off, so teardown powers it on over that BMC and
+waits before concluding it cannot be wiped. It is gated separately from teardown and
+defaults off, because the fleet's desired state says nothing about a machine's power:
+dropping a host from the inventory asks for it to leave the cluster, not for anyone to
+touch its power. The wait is tolerated, so a machine that does not come back leaves
+the run exactly where it would have been, holding its node object for the next one to
+find. What this does not reach is a machine whose installed system no longer boots --
+that needs maintenance mode, and the media question above it.
+
+`baremetal_talos_unregister` is the end of that ladder. Retention is right while
+someone might still fix the machine and wrong once nobody will, and nothing in a
+cluster can tell those apart -- it is a fact about the world, not about the fleet. So
+it is asked for rather than inferred, and a clock is deliberately not the instrument:
+expiring an orphan after so many days would stop the reporting without making the
+machine any safer, which is the failure retention exists to prevent. Set, it deletes
+members that could not be wiped and stops naming them; members that can be wiped are
+wiped as before. What it gives up is everything: the disk keeps its cluster
+credentials, and the node object carrying the address and the BMC annotation goes with
+it, so nothing can find that machine again.
 
 Working out which machines those are belongs to classification rather than to
 teardown, because it is the same question the install and member groups answer --
@@ -490,6 +547,16 @@ The `scale` molecule scenario builds the fleet, then points
 `baremetal_talos_worker_group` at a subset -- the harness's way of saying machines
 have left the inventory -- and asserts the cluster is exactly what the inventory kept
 and every node Ready. Pointing it back and running deploy again brings them home.
+
+It drives both halves of that. A machine is powered off over Redfish before the
+inventory drops it, which is the only way to stage a member that has died: everything
+downstream of the reachability probe runs only for a machine that has stopped
+answering. A pod is pinned to it by name first, tolerating everything, so that the
+release has something real to let go of -- the scenario then asserts the node object
+was kept, the machine cordoned and the cordon marked, the pinned pod gone and the
+daemon sets left alone. Powering the machine back on and converging again is what
+proves the retry: the orphan is still there to be found, and this time it can be
+wiped.
 
 ## Verification
 

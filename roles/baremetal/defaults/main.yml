@@ -10,7 +10,9 @@
 #   baremetal_network_gateway
 #   baremetal_network_prefix
 
-baremetal_bmc_system_id: "System.Embedded.1"
+# --- install -----------------------------------------------------------------
+
+baremetal_reinstall: false
 
 # --- BMC ---------------------------------------------------------------------
 
@@ -19,6 +21,8 @@ baremetal_bmc_media_category: Systems
 
 baremetal_bmc_retries: 10
 baremetal_bmc_retry_delay: 6
+
+baremetal_bmc_system_id: "System.Embedded.1"
 
 # --- media server ------------------------------------------------------------
 
@@ -59,14 +63,17 @@ baremetal_talos_api_fqdn: ""
 baremetal_talos_release: ""
 baremetal_talos_k8s_version: ""
 
-baremetal_reinstall: false
 baremetal_talos_boot: true
 baremetal_talos_configure: true
+baremetal_talos_unregister: false
 
 baremetal_talos_annotate_enable: true
 baremetal_talos_teardown_enable: false
 baremetal_talos_teardown_timeout: 600
 baremetal_talos_drain_timeout: 300
+
+baremetal_talos_reclaim_enable: false
+baremetal_talos_reclaim_timeout: 300
 
 baremetal_talos_install_disk: ""
 
