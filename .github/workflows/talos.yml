@@ -1,5 +1,5 @@
 ---
-name: molecule
+name: talos
 permissions:
   contents: read
 on:
@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   talos:
-    name: libvirt
+    name: talos
     runs-on: libvirt
     strategy:
       max-parallel: 1
