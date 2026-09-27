@@ -512,6 +512,16 @@ the run exactly where it would have been, holding its node object for the next o
 find. What this does not reach is a machine whose installed system no longer boots --
 that needs maintenance mode, and the media question above it.
 
+Keeping that node object has a price, and it is paid in `bootstrap.yml`. `talosctl
+health` is told the fleet the inventory describes and treats a cluster holding anything
+else as unhealthy: it reports the extra node, waits out the whole timeout, and fails.
+A retained orphan is exactly that extra node, so the health assertion is skipped while
+one is present and the state named instead -- asserting health against a fleet the
+cluster does not match cannot succeed, and spending fifteen minutes discovering that
+helps nobody. It is a stopgap: it silences the check in the one state where it would be
+most welcome. Issue #8 tracks moving an orphan's record off the node object so
+retention is not needed and health can stay strict.
+
 `baremetal_talos_unregister` is the end of that ladder. Retention is right while
 someone might still fix the machine and wrong once nobody will, and nothing in a
 cluster can tell those apart -- it is a fact about the world, not about the fleet. So
