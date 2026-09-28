@@ -12,8 +12,13 @@
 # Pointing baremetal_talos_worker_group at talos_worker_core is this harness's way of
 # saying the machines in talos_worker_scale have left the inventory; pointing it back
 # is how they return.
-- name: Group provisioning hosts
-  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+#
+# Classification is deliberately not run here. group_by only ever adds, and the groups
+# it builds outlive the play that built them, so classifying the whole fleet once at
+# the top would leave the machine in _baremetal_talos_member for the rest of the run:
+# every later converge would keep addressing a machine it had just been told to stop
+# expecting. Everything below reads the inventory's own groups, which need no
+# classification, and each converge classifies for itself.
 
 # Both halves of what teardown does when it cannot see the cluster, staged by taking
 # the credentials away rather than the control plane: the guard branches on whether

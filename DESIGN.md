@@ -89,6 +89,22 @@ installed machine. Classification does the same job without the veto, and a mixe
 fleet -- some machines built, some not -- splits automatically rather than having to
 be separated by hand or rebuilt wholesale.
 
+Classification describes the fleet for one invocation, and only for one. `group_by`
+adds hosts to groups and nothing takes them out again -- Ansible has no primitive that
+removes a host from a group, and `meta: refresh_inventory` does not clear the ones
+`group_by` built. So the groups a run ends with are the union of every classification
+it performed, not the answer the last one gave. Within a run that means one definition
+of the fleet: pointing `baremetal_talos_worker_group` at a different group half way
+through stops the machines it drops from being reclassified, but leaves them in the
+groups they already joined, and every later play still addresses them. Two definitions
+of the fleet means two `ansible-playbook` invocations.
+
+Repeated classification inside one run is otherwise harmless, because each pass puts a
+host in exactly one of install and member. A host reaches both only when the answer
+changes part way through, which happens once: machines being installed come up and
+become members. Nothing on the install path runs after that, so nothing addresses them
+wrongly.
+
 The same playbook asks the question from the cluster's side: which members does the
 cluster carry that the inventory does not? Those cannot be a group, because a group
 holds inventory hosts and these are exactly the machines no longer in the inventory,

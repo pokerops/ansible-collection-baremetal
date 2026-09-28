@@ -1,7 +1,9 @@
 ---
-- name: Group provisioning hosts
-  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
-
+# Classification is deliberately not run here. group_by only ever adds, and its groups
+# outlive the play that built them, so classifying the whole fleet first would leave
+# the machine in _baremetal_talos_member -- and the converge below, which puts it on
+# the install path, would have it in both at once. The plays here read the inventory's
+# own groups, which need no classification.
 - name: Record what the machine looks like before it is rebuilt
   hosts: localhost
   connection: local
