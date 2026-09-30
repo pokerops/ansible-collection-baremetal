@@ -34,34 +34,25 @@
       force_basic_auth: true
       validate_certs: "{{ baremetal_bmc_validate_certs }}"
   tasks:
-    - name: Read the Redfish system
-      ansible.builtin.uri:
-        url: "{{ redfish_system }}"
-      register: _verify_system
-
-    - name: Assert the machine is powered on and set to boot removable media
-      ansible.builtin.assert:
-        that:
-          - _verify_system.json.PowerState == 'On'
-          - _verify_system.json.Boot.BootSourceOverrideTarget == 'Cd'
-        fail_msg: >-
-          Expected PowerState=On and BootSourceOverrideTarget=Cd, got
-          {{ _verify_system.json.PowerState }} /
-          {{ _verify_system.json.Boot.BootSourceOverrideTarget }}.
-
+    # The one BMC assertion left, and the only one a healthy cluster cannot stand in
+    # for: a node that is Ready proves the machine booted, but says nothing about what
+    # is still hanging off its virtual media. Media left attached only bites on a cold
+    # start -- a power failure, or teardown reclaiming a member over its BMC -- long
+    # after the run that left it there.
     - name: Read the attached boot media
       ansible.builtin.uri:
         url: "{{ redfish_system }}/VirtualMedia/Cd"
       register: _verify_media
 
-    - name: Assert the boot image is attached from the media server
+    - name: Assert no boot media is left attached
       ansible.builtin.assert:
         that:
-          - _verify_media.json.Inserted
-          - _verify_media.json.Image == baremetal_media_url_boot
+          - not (_verify_media.json.Inserted | default(false) | bool)
         fail_msg: >-
-          Expected {{ baremetal_media_url_boot }} on Cd;
-          found {{ _verify_media.json.Image | default('nothing') }}.
+          {{ inventory_hostname }} still has {{ _verify_media.json.Image | default('media') }}
+          attached. The machine boots removable media before its disk, and the server
+          behind that image is stopped when the run ends, so it would reach for an
+          image that cannot answer the next time it is powered on cold.
 
     - name: Read the node's addresses
       ansible.builtin.command:

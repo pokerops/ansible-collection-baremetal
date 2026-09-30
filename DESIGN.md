@@ -189,6 +189,24 @@ has something to hit.
 The first request for a schematic the Factory has not served before triggers a build
 rather than a download, which is what `baremetal_boot_image_timeout` waits on.
 
+**The media comes back off once the fleet is up.** `playbooks/eject.yml` runs after
+bootstrap and detaches the image from every machine. Leaving it attached is what makes
+a machine fail to return from a cold start: the firmware is configured to boot
+removable media before disk, and the server behind that image is stopped when the run
+ends, so a machine powered off and on again reaches for an image that no longer
+answers rather than the system on its own disk. A deploy never notices, because it
+boots machines through the BMC with the server running and a one-time override; the
+state only bites much later, and somewhere else -- a power failure, a technician at
+the BMC, or teardown reclaiming an unreachable member by powering it on.
+
+Ejecting after bootstrap rather than after the install means every machine has already
+joined: taking a boot source away from one still writing its disk would be its own
+kind of damage. It runs for every inventory node rather than only the machines just
+installed, so a fleet built before this existed ends up in the same state as one built
+after. Nothing asserts the absence of media except the harness -- a Ready node proves
+the machine booted but says nothing about what is still hanging off its virtual media,
+so `talos/verify.yml` reads it back from the BMC.
+
 ## Discovery
 
 `playbooks/talos/discover.yml` finds the machines and decides which of their links
