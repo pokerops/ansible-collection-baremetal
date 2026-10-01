@@ -1,18 +1,4 @@
 ---
-# Takes the boot media back off every machine, once the fleet is up and joined.
-#
-# Leaving it attached is what makes a machine fail to return from a cold start. The
-# domain boots removable media before disk, and the media server it was pointed at is
-# stopped when the run ends -- so a machine powered off and on again reaches for an
-# image that no longer answers instead of the system on its disk. Nothing in a deploy
-# notices, because a deploy boots machines through the BMC with the server running and
-# a one-time override. It surfaces later: a power failure, a technician at the iDRAC,
-# or teardown reclaiming a member over its BMC.
-#
-# Runs after bootstrap, so every machine has already installed and joined -- ejecting
-# while one is still installing would take its boot source away mid-write. Runs for
-# every inventory node rather than only the ones just installed, so a fleet built
-# before this existed is left in the same state as one built after.
 - name: Eject boot media
   hosts: _baremetal_inventory_nodes
   connection: local
@@ -31,15 +17,12 @@
         username: "{{ baremetal_bmc_username }}"
         password: "{{ baremetal_bmc_password }}"
         validate_certs: "{{ baremetal_bmc_validate_certs }}"
-        resource_id: "{{ baremetal_bmc_system_id }}"
       register: _baremetal_eject_vmedia
       until: _baremetal_eject_vmedia is not failed
       retries: "{{ bmc_retries }}"
       delay: "{{ bmc_delay }}"
 
-    # Tolerated the way boot.yml tolerates its own eject: the insert that matters is
-    # the next boot's, and a slot that was already free reports nothing to eject.
-    - name: Eject the media the machine is still holding
+    - name: Eject mounted media
       community.general.redfish_command:
         category: "{{ baremetal_bmc_media_category }}"
         baseuri: "{{ baremetal_bmc_address }}"
@@ -50,10 +33,9 @@
         command: VirtualMediaEject
         virtual_media:
           image_url: "{{ item }}"
-      loop: >-
-        {{ _baremetal_eject_vmedia.redfish_facts.virtual_media.entries | map('last') | flatten
-           | selectattr('Image', 'defined') | map(attribute='Image')
-           | select() | unique | list }}
-      loop_control:
-        label: "{{ item }}"
+      loop: "{{ _eject }}"
+      vars:
+        _media: "{{ _baremetal_eject_vmedia.redfish_facts.virtual_media.entries | map('last') }}"
+        _image: "{{ _media | flatten | selectattr('Image', 'defined') | map(attribute='Image') }}"
+        _eject: "{{ _image | select | unique }}"
       failed_when: false

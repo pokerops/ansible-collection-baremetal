@@ -74,11 +74,10 @@
       ansible.builtin.set_fact:
         _baremetal_bootstrap_unexpected: "{{ _joined | difference(_inventory) }}"
       vars:
-        _inventory: >-
-          {{ (groups[baremetal_talos_controlplane_group] | default([]))
-             + (groups[baremetal_talos_worker_group] | default([])) }}
-        _joined: >-
-          {{ _baremetal_bootstrap_nodes.resources | default([]) | map(attribute='metadata.name') | list }}
+        _nodes_control: "{{ groups[baremetal_talos_controlplane_group] | default([]) }}"
+        _nodes_workers: "{{ groups[baremetal_talos_worker_group] | default([]) }}"
+        _inventory: "{{ _nodes_control + _nodes_workers }}"
+        _joined: "{{ _baremetal_bootstrap_nodes.resources | default([]) | map(attribute='metadata.name') | list }}"
 
     - name: Report the cluster carrying members the inventory does not
       ansible.builtin.debug:

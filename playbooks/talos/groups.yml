@@ -138,9 +138,9 @@
       changed_when: (_baremetal_cluster_recover.rc | default(1)) == 0
       vars:
         _control: "{{ groups['_baremetal_talos_member_control'] | default([]) }}"
-        _endpoint: >-
-          {{ baremetal_talos_api_address if baremetal_talos_api_address | length > 0
-             else (hostvars[_control | first].ansible_host if _control | length > 0 else '') }}
+        _api_addr: "{{ baremetal_talos_api_address }}"
+        _control_addr: "{{ hostvars[_control | first].ansible_host if _control | length > 0 else '' }}"
+        _endpoint: "{{ _api_addr if _api_addr | length > 0 else _control_addr }}"
       when:
         - not _baremetal_cluster_kubeconfig_found.stat.exists
         - _baremetal_cluster_talosconfig.stat.exists
