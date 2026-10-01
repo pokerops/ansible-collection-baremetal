@@ -36,7 +36,7 @@
         _node_ntp: "{{ _timeserver_spec.timeServers | default([]) }}"
       vars:
         _resolver_spec: "{{ (_baremetal_resolvers.stdout | from_json).spec }}"
-        _timeserver_spec: "{{  (_baremetal_timeservers.stdout | from_json).spec  }}"
+        _timeserver_spec: "{{  (_baremetal_timeservers.stdout | from_json).spec }}"
 
     - name: Converge the settings that differ
       when: _baremetal_network_drift | bool
