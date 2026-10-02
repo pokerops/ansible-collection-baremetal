@@ -51,11 +51,14 @@
       retries: "{{ baremetal_bmc_retries }}"
       delay: "{{ baremetal_bmc_retry_delay }}"
 
+    # Same wait a fresh machine's first boot gets, because a cold BMC power-on is the
+    # same operation either way -- a shorter timeout here just means giving up on a
+    # machine that was always going to come back, before it does.
     - name: Wait for the member to answer again
       ansible.builtin.wait_for:
         host: "{{ _baremetal_talos_orphan_address }}"
         port: 50000
-        timeout: "{{ baremetal_talos_reclaim_timeout }}"
+        timeout: "{{ baremetal_talos_api_timeout }}"
       failed_when: false
       register: _baremetal_teardown_reconnect
       when: _baremetal_talos_orphan_address | length > 0

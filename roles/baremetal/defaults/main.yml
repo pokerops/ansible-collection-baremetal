@@ -73,7 +73,6 @@ baremetal_talos_teardown_timeout: 600
 baremetal_talos_drain_timeout: 300
 
 baremetal_talos_reclaim_enable: false
-baremetal_talos_reclaim_timeout: 300
 
 baremetal_talos_install_disk: ""
 
