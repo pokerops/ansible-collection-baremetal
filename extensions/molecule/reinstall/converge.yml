@@ -1,0 +1,5 @@
+---
+# An ordinary fleet. The side effect is what forces one of its machines back onto the
+# install path while it is still a healthy member.
+- name: Converge
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy

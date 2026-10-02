@@ -50,6 +50,48 @@
       retries: "{{ baremetal_talos_bootstrap_retries }}"
       delay: "{{ baremetal_talos_bootstrap_delay }}"
 
+    # `talosctl health` is told the fleet the inventory describes, and treats a
+    # cluster holding anything else as unhealthy -- it waits out the whole timeout on
+    # "unexpected nodes" and then fails. A member teardown could not wipe is exactly
+    # that: its node is kept on purpose so a later run can find it again. Asserting
+    # health against a fleet the cluster does not match cannot succeed, so the state
+    # is named instead of waited on. Read fresh rather than taken from
+    # classification, which ran before teardown had its turn.
+    - name: Look for the cluster's kubeconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_bootstrap_kubeconfig
+
+    - name: Query cluster nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      delegate_to: localhost
+      register: _baremetal_bootstrap_nodes
+      when: _baremetal_bootstrap_kubeconfig.stat.exists
+
+    - name: Record members the inventory does not carry
+      ansible.builtin.set_fact:
+        _baremetal_bootstrap_unexpected: "{{ _joined | difference(_inventory) }}"
+      vars:
+        _nodes_control: "{{ groups[baremetal_talos_controlplane_group] | default([]) }}"
+        _nodes_workers: "{{ groups[baremetal_talos_worker_group] | default([]) }}"
+        _inventory: "{{ _nodes_control + _nodes_workers }}"
+        _joined: "{{ _baremetal_bootstrap_nodes.resources | default([]) | map(attribute='metadata.name') | list }}"
+
+    - name: Report the cluster carrying members the inventory does not
+      ansible.builtin.debug:
+        msg: >-
+          Not asserting cluster health: {{ _baremetal_bootstrap_unexpected | join(', ') }}
+          {{ (_baremetal_bootstrap_unexpected | length > 1) | ternary('are', 'is') }} in the
+          cluster and not in the inventory, and a health check told to expect the
+          inventory cannot pass while that is true. Take
+          {{ (_baremetal_bootstrap_unexpected | length > 1) | ternary('them', 'it') }} out
+          with baremetal_talos_teardown_enable, or put
+          {{ (_baremetal_bootstrap_unexpected | length > 1) | ternary('them', 'it') }} back
+          in the inventory.
+      when: _baremetal_bootstrap_unexpected | length > 0
+
     - name: Wait for the cluster to converge
       ansible.builtin.command:
         cmd: >-
@@ -59,6 +101,7 @@
       vars:
         _workers: "{{ (worker_nodes | length > 0) | ternary('--worker-nodes ' + (worker_nodes | join(',')), '') }}"
       changed_when: false
+      when: _baremetal_bootstrap_unexpected | length == 0
 
     - name: Fetch the cluster kubeconfig
       ansible.builtin.command:

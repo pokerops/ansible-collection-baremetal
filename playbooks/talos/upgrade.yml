@@ -65,8 +65,9 @@
 
     - name: Record the release the node is running
       ansible.builtin.set_fact:
-        _baremetal_node_release: >-
-          {{ (_baremetal_member_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}
+        _baremetal_node_release: "{{ _release }}"
+      vars:
+        _release: "{{ (_baremetal_member_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}"
 
 - name: Refuse to move the fleet backwards
   hosts: localhost

@@ -31,22 +31,20 @@
 
     - name: Record the settings the node reports
       ansible.builtin.set_fact:
-        _baremetal_node_dns: "{{ _resolver_spec.dnsServers | default([]) }}"
-        _baremetal_node_search: "{{ _resolver_spec.searchDomains | default([]) }}"
-        _baremetal_node_ntp: "{{ _timeserver_spec.timeServers | default([]) }}"
+        _node_dns: "{{ _resolver_spec.dnsServers | default([]) }}"
+        _node_search: "{{ _resolver_spec.searchDomains | default([]) }}"
+        _node_ntp: "{{ _timeserver_spec.timeServers | default([]) }}"
       vars:
-        _resolver_spec: >-
-          {{ (_baremetal_resolvers.stdout | from_json).spec }}
-        _timeserver_spec: >-
-          {{ (_baremetal_timeservers.stdout | from_json).spec }}
+        _resolver_spec: "{{ (_baremetal_resolvers.stdout | from_json).spec }}"
+        _timeserver_spec: "{{  (_baremetal_timeservers.stdout | from_json).spec }}"
 
     - name: Converge the settings that differ
       when: _baremetal_network_drift | bool
       vars:
-        _baremetal_network_drift: >-
-          {{ (baremetal_dns_servers | length > 0 and _baremetal_node_dns != baremetal_dns_servers)
-             or (baremetal_search_domains | length > 0 and _baremetal_node_search != baremetal_search_domains)
-             or (baremetal_ntp_servers | length > 0 and _baremetal_node_ntp != baremetal_ntp_servers) }}
+        _baremetal_dns_drift: "{{ baremetal_dns_servers | length > 0 and _node_dns != baremetal_dns_servers }}"
+        _baremetal_search_drift: "{{ baremetal_search_domains | length > 0 and _node_search != baremetal_search_domains }}"
+        _baremetal_ntp_drift: "{{ baremetal_ntp_servers | length > 0 and _node_ntp != baremetal_ntp_servers }}"
+        _baremetal_network_drift: "{{ _baremetal_dns_drift or _baremetal_search_drift or _baremetal_ntp_drift }}"
       block:
         - name: Render the networking patch
           ansible.builtin.copy:
