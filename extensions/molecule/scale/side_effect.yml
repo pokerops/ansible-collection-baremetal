@@ -505,7 +505,13 @@
     baremetal_talos_teardown_enable: true
     baremetal_talos_reclaim_enable: true
 
-- name: Confirm the retry finished what the first run could not
+# Unregistering deletes the node along with the BMC annotation that is the only record
+# of how to reach it; the machine rejoining on its own afterwards registers a node
+# kubelet built from nothing, carrying no annotation of its own. Nothing here puts the
+# machine back through annotate.yml -- it stays out of the member group for the rest of
+# the scenario -- so reclaim has no BMC coordinates to act on and leaves it alone. That
+# is the warning unregister carries, held to: reclaim is not a second chance.
+- name: Confirm reclaim cannot recover what unregister already let go of
   hosts: localhost
   connection: local
   gather_facts: false
@@ -518,28 +524,29 @@
         kubeconfig: "{{ baremetal_kubeconfig }}"
       register: _scale_scaled_down
 
-    - name: Assert the member the inventory dropped left, and nothing else did
+    - name: Assert the machine unregister let go of is still beyond reclaim's reach
       ansible.builtin.assert:
         that:
-          - _joined == _kept
+          - _joined == _expected
         fail_msg: >-
           After the retry, the cluster is
           {{ _joined | join(', ') | default('empty', true) }} rather than
-          {{ _kept | join(', ') }}.
+          {{ _expected | join(', ') }}. {{ _scale_machine }} rejoined without a BMC
+          annotation of its own, so reclaim should have had nothing to act on and left
+          it exactly where it was.
       vars:
         _joined: "{{ _scale_scaled_down.resources | map(attribute='metadata.name') | sort }}"
-        _kept: >-
-          {{ ((groups['talos_controlplane'] | default([])) + (groups['talos_worker_core'] | default([]))) | sort }}
+        _expected: >-
+          {{ ((groups['talos_controlplane'] | default([])) + (groups['talos_worker'] | default([]))) | sort }}
 
-    - name: Assert every node that is left is Ready
+    - name: Assert every other node is still Ready
       ansible.builtin.assert:
         that:
           - _ready == ['True']
         fail_msg: >-
           {{ item.metadata.name }} is not Ready
-          (Ready={{ _ready | join(',') | default('absent', true) }}) after the cluster
-          was scaled down.
-      loop: "{{ _scale_scaled_down.resources }}"
+          (Ready={{ _ready | join(',') | default('absent', true) }}).
+      loop: "{{ _scale_scaled_down.resources | rejectattr('metadata.name', 'equalto', _scale_machine) | list }}"
       loop_control:
         label: "{{ item.metadata.name }}"
       vars:
