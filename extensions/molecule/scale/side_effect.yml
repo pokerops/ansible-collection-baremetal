@@ -298,17 +298,20 @@
 
     # Anything left has to be a daemon set's, which teardown leaves alone on purpose:
     # deleting one only has its controller place another on the same dead machine.
+    # Filtered rather than looped: a pod-per-iteration assert echoes the whole pod
+    # object into the task result on every pass, not just a failing one.
     - name: Assert whatever is left belongs to a daemon set
       ansible.builtin.assert:
         that:
-          - "'DaemonSet' in (item.metadata.ownerReferences | default([]) | map(attribute='kind') | list)"
+          - _not_daemonset | length == 0
         fail_msg: >-
-          {{ item.metadata.namespace }}/{{ item.metadata.name }} is still bound to
-          {{ _scale_machine }} and nothing owns it but
-          {{ item.metadata.ownerReferences | default([]) | map(attribute='kind') | join(', ') | default('nothing', true) }}.
-      loop: "{{ _scale_held.resources | default([]) }}"
-      loop_control:
-        label: "{{ item.metadata.namespace }}/{{ item.metadata.name }}"
+          {{ _not_daemonset | map(attribute='metadata.namespace')
+             | zip(_not_daemonset | map(attribute='metadata.name')) | map('join', '/') | join(', ') }}
+          still bound to {{ _scale_machine }} and owned by something other than a daemon set.
+      vars:
+        _not_daemonset: >-
+          {{ _scale_held.resources | default([])
+             | community.general.json_query("[?!(metadata.ownerReferences[?kind=='DaemonSet'])]") }}
 
     - name: Query cluster nodes
       kubernetes.core.k8s_info:
