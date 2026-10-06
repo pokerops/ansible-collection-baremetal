@@ -596,6 +596,11 @@
         port: 50000
         timeout: "{{ baremetal_talos_api_timeout }}"
 
+- name: Reset the orphan's NVRAM before the install path can reach it
+  ansible.builtin.import_playbook: ../default/reset_nvram.yml
+  vars:
+    _nvram_reset_target: "{{ _scale_machine }}"
+
 - name: Scale the cluster back out
   ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
 

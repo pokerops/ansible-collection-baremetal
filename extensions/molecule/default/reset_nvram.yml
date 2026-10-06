@@ -1,0 +1,56 @@
+---
+# sushy-tools' libvirt driver implements a one-time boot override by rewriting the
+# domain's XML device-level boot order and redefining the domain -- it never touches
+# the UEFI firmware's own persisted NVRAM. A machine that has already installed Talos
+# has its own boot entry sitting in that NVRAM, and firmware consults it ahead of the
+# XML-level hint, so the override this harness's simulated BMC issues loses to it
+# every time (confirmed directly: an otherwise-identical machine with a blank disk
+# takes the same override without trouble). Real hardware's one-time override is
+# implemented in firmware for exactly this case and does not share the limitation --
+# this resets the simulator to behave the way a real BMC already does, rather than
+# changing what is being tested.
+#
+# virsh-only, and deliberately not something boot.yml could ever call: there is no
+# Redfish action for "undefine and redefine a domain", and no such thing as undefining
+# a real server. This has no place outside test scaffolding.
+- name: Reset the simulated BMC's stale boot entry before a reinstall
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Dump the current domain definition
+      ansible.builtin.command:
+        cmd: "virsh -c qemu:///system dumpxml {{ _nvram_reset_target }}"
+      changed_when: false
+      register: _nvram_reset_xml
+
+    - name: Save the domain definition
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .xml
+      register: _nvram_reset_file
+
+    - name: Write the domain definition
+      ansible.builtin.copy:
+        dest: "{{ _nvram_reset_file.path }}"
+        content: "{{ _nvram_reset_xml.stdout }}"
+        mode: "0600"
+
+    # --nvram deletes the backing file along with the domain's own definition; the
+    # redefine below puts the domain straight back, identical but for whatever libvirt
+    # recreates fresh from the OVMF template on its next start -- same MAC, same UUID,
+    # same disks, untouched.
+    - name: Drop the domain and its NVRAM
+      ansible.builtin.command:
+        cmd: "virsh -c qemu:///system undefine {{ _nvram_reset_target }} --nvram"
+      changed_when: true
+
+    - name: Redefine the domain identically
+      ansible.builtin.command:
+        cmd: "virsh -c qemu:///system define {{ _nvram_reset_file.path }}"
+      changed_when: true
+
+    - name: Remove the saved domain definition
+      ansible.builtin.file:
+        path: "{{ _nvram_reset_file.path }}"
+        state: absent

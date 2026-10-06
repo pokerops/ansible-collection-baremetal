@@ -36,6 +36,11 @@
           {{ _reinstall_machine }} reports no bootID, so there is nothing to tell a
           rebuilt machine apart from one that was left alone.
 
+- name: Reset the member's NVRAM before the install path can reach it
+  ansible.builtin.import_playbook: ../default/reset_nvram.yml
+  vars:
+    _nvram_reset_target: "{{ _reinstall_machine }}"
+
 - name: Rebuild the machine from installer media
   ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
   vars:
