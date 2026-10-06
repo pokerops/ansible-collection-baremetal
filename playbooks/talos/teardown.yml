@@ -39,6 +39,14 @@
                 loop_var: _baremetal_talos_orphan
               loop: "{{ _baremetal_talos_orphan_worker }}"
 
+            # A retained orphan -- reachable or not -- can be left holding a daemon
+            # set pod that never settles: evicted once the node is NotReady long
+            # enough, then rescheduled straight back onto the same node by the
+            # controller that owns it, Pending forever since nothing there will run
+            # it. Excluded by node name rather than by owner kind, since an orphan
+            # that is genuinely gone is exactly the state this wait exists to confirm
+            # for everything else. A pod with no nodeName yet is tracked regardless --
+            # that one failing to settle is not this.
             - name: Wait for every workload to settle
               kubernetes.core.k8s_info:
                 kind: Pod
@@ -49,7 +57,12 @@
               delay: "{{ baremetal_talos_ready_delay }}"
               vars:
                 _pods_all: "{{ _baremetal_pod_data.resources | default([]) }}"
-                _pods_ko: "{{ _pods_all | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}"
+                _pods_scheduled: "{{ _pods_all | selectattr('spec.nodeName', 'defined') }}"
+                _pods_unscheduled: "{{ _pods_all | rejectattr('spec.nodeName', 'defined') }}"
+                _pods_tracked: >-
+                  {{ (_pods_scheduled | rejectattr('spec.nodeName', 'in', _baremetal_talos_orphans) | list)
+                     + (_pods_unscheduled | list) }}
+                _pods_ko: "{{ _pods_tracked | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) }}"
 
 - name: Return cordoned nodes into the cluster
   hosts: _baremetal_talos_member
