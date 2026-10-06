@@ -62,6 +62,7 @@ inventory no longer carries.
 | `baremetal_talos_annotate_enable` | `true`  | record each member's BMC on its node, so it outlives the machine              |
 | `baremetal_talos_reclaim_enable`  | `false` | power an unreachable member on over its BMC before giving up on wiping it     |
 | `baremetal_talos_unregister`      | `false` | delete a member that could not be wiped, accepting the machine is gone        |
+| `baremetal_talos_wakeup`          | `true`  | power a quiet member back on over its BMC rather than fail the run on it      |
 | `baremetal_talos_k8s_version`     | `""`    | Kubernetes version; empty tracks the toolchain                                |
 | `baremetal_talos_boot`            | `true`  | boot the machines from virtual media                                          |
 | `baremetal_talos_configure`       | `true`  | discover, configure, bootstrap and converge the machines                      |
@@ -69,7 +70,8 @@ inventory no longer carries.
 ### What a run does
 
 1. **Classify.** Machines that already answer on their inventory address are
-   members; the rest are installed.
+   members. A registered member that does not answer is woken over its own BMC
+   rather than installed; only a machine that was never a member is.
 2. **Publish media.** One boot image for the fleet, built by the Talos Image
    Factory and served over HTTP.
 3. **Boot.** Each BMC is pointed at that image over Redfish and powered on.
@@ -164,13 +166,16 @@ the ones that could not be.
 
 #### Node crash
 
-For putting a machine that died back into the cluster it left.
+For putting a machine that stopped answering back into the cluster it left.
 
 - Leave the host in the inventory.
 - `ansible-playbook -i inventory.yml pokerops.baremetal.talos.deploy`
 
-A machine that stopped answering is already treated as one to install, so an ordinary
-deploy rebuilds it. Nothing else is needed.
+The machine is powered on over its own BMC and given up to `baremetal_talos_api_timeout`
+to answer; nothing is rebuilt, since it was already a member. If it still does not
+answer, the run fails there rather than continuing as if nothing were missing. Set
+`baremetal_talos_wakeup=false` to leave a member that is down on purpose alone instead
+-- the run then skips it and succeeds, reporting that it did.
 
 #### Node reinstall
 
