@@ -65,6 +65,18 @@ booted from media and rebuilt by an ordinary deploy, without anyone asking for i
 installer media does not care what is on the disk. A machine that will not boot at
 all is a different thing entirely, and nothing here reaches it; it needs hands.
 
+A registered member that does not answer is read as off rather than unprovisioned,
+which reachability alone cannot tell apart from a machine that was never installed.
+Only one of the two is safe to act on: a never-installed machine has nothing to lose
+from installer media, while a registered one that is merely off -- an outage, a
+technician, someone's deliberate call -- has a running system that forcing it onto the
+install path would overwrite without being asked. `groups.yml` reads the cluster's
+member list before classifying anything, and a host already on it classifies as a
+member no matter what the reachability check says. `baremetal_reinstall` still reaches
+it: that flag is a standing instruction rather than a guess about why a machine is
+quiet, so it is read independently and ORed back in, the one way a registered member is
+still put on the install path on purpose.
+
 This matters because pointing a machine at installer media and powering it off to get
 there takes it out of service, whatever the media then decides to do. Doing that to a
 fleet that was already built took a live six-node cluster down once. Every
@@ -78,6 +90,27 @@ the fleet -- rebuilding every machine at once would take etcd with it. The `rein
 scenario does exactly that to a healthy member, which is also the only place the
 collection finds out what its own media does when it lands on an installed disk:
 discovery finds the machine in maintenance mode, or times out waiting for it.
+
+Timing out is not hypothetical, and tracing one down turned up two separate things
+sharing the one symptom. The first is `talos.halt_if_installed`: the Factory imager
+appends it to every ISO unconditionally, `extraKernelArgs` only gets overwrite
+semantics for `console` and the platform arg, so a plain `talos.halt_if_installed=0`
+override is just a second, ignored occurrence -- Talos reads the first and refuses to
+leave maintenance mode. go-procfs' `AppendAll` treats a leading `-` on a key as a
+request to delete it outright, which is the override that actually lands:
+`-talos.halt_if_installed` in the schematic, costing nothing on a blank disk since the
+check is `Installed() && haltIfInstalled` and `Installed()` is already false there.
+The second is not something a kernel argument reaches: on this harness's simulated
+BMC, a one-time boot override reliably wins on a machine that has never installed
+anything, and reliably loses to whatever firmware boot entry Talos registered on one
+that has -- confirmed by swapping an installed disk for a blank one on an otherwise
+identical machine and watching the same override succeed where it had just failed.
+Real hardware's one-time override is implemented in firmware for exactly this case and
+does not share the limitation; this is the simulator's, not the collection's. It is
+also why a registered member is better reached by powering it back on
+(`playbooks/poweron.yml`) than by routing it through `boot.yml` a second time -- Talos
+rejoins on the disk it already has, and nothing has to win a fight with a boot entry at
+all.
 
 The classification tasks are marked `changed_when: false`. `group_by` reports changed
 unconditionally, but it only binds hosts to groups and touches nothing on a managed
@@ -141,6 +174,22 @@ That set is compared against the inventory groups rather than against the groups
 above, because those honour `--limit`. A run limited to one machine would otherwise
 be indistinguishable from an inventory every other member had been taken out of, and
 teardown would eat the cluster.
+
+## Generic install mechanics
+
+`boot.yml` and `poweron.yml` are the two places this collection only ever talks to a
+BMC and a boot device -- no talosctl, nothing about what gets installed or what the
+machine joins. Neither reads a Talos-prefixed group for that reason: `_baremetal_install`
+and `_baremetal_inventory_nodes` are the generic names `groups.yml` populates
+alongside their Talos-prefixed counterparts, so a non-Talos install path can reuse
+both playbooks unchanged just by populating the same two groups its own way.
+
+`playbooks/talos/poweron.yml` is a thin wrapper around `poweron.yml`: import
+classification, then the generic playbook. `boot.yml` does not need one, because
+`deploy.yml` already runs classification itself before importing it. `poweron.yml`
+does, because it is also called standalone -- the `scale` scenario wakes one orphan
+member this way, outside any deploy -- and a standalone call needs the groups it reads
+built first.
 
 ## Boot media
 

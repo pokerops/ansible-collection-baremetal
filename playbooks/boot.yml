@@ -1,6 +1,6 @@
 ---
 - name: Boot nodes from virtual media
-  hosts: _baremetal_talos_install
+  hosts: _baremetal_install
   gather_facts: false
   connection: local
   roles:

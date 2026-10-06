@@ -1,4 +1,35 @@
 ---
+# Read ahead of classification, because a host that is merely off and a host that was
+# never installed look identical to the reachability check below -- a registered node
+# is how the two are told apart. Its own query rather than reusing the one further down
+# in "Detect cluster orphans": that one depends on the member/install split this play
+# produces, and reusing it here would mean classifying hosts before the data classification
+# depends on exists.
+- name: Detect registered cluster members
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Stat cluster kubeconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_groups_kubeconfig
+
+    - name: Query cluster nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_groups_nodes
+      failed_when: false
+      when: _baremetal_groups_kubeconfig.stat.exists
+
+    - name: Record registered cluster members
+      ansible.builtin.set_fact:
+        _baremetal_registered_members: >-
+          {{ _baremetal_groups_nodes.resources | default([]) | map(attribute='metadata.name') | list }}
+
 - name: Build provisioning groups
   hosts: "{{ baremetal_talos_controlplane_group }}:{{ baremetal_talos_worker_group }}"
   connection: local
@@ -23,13 +54,33 @@
         key: "_baremetal_inventory_nodes"
       changed_when: false
 
-    - name: Assign provisioning groups
-      ansible.builtin.group_by:
-        key: "_baremetal_talos_{{ (_reinstall or _unprovisioned) | bool | ternary('install', 'member') }}"
-      changed_when: false
+    # A registered member that does not answer is read as off rather than unprovisioned
+    # -- the inventory asked for it to be a member once, and nothing here knows whether
+    # the reason it is quiet now is one that is still waiting to be dealt with by hand.
+    # baremetal_reinstall still overrides this: that is a standing instruction, not a
+    # guess, so it is allowed to put a registered member back on the install path on
+    # purpose.
+    - name: Determine the provisioning role
+      ansible.builtin.set_fact:
+        _baremetal_provisioning_role: "{{ (_reinstall or _unprovisioned) | bool | ternary('install', 'member') }}"
       vars:
-        _unprovisioned: "{{ _baremetal_provisioned.msg | default('', true) | length > 0 }}"
+        _registered: "{{ inventory_hostname in (hostvars['localhost']._baremetal_registered_members | default([])) }}"
+        _unreachable: "{{ _baremetal_provisioned.msg | default('', true) | length > 0 }}"
+        _unprovisioned: "{{ _unreachable and not _registered }}"
         _reinstall: "{{ baremetal_reinstall | bool }}"
+
+    # Talos-specific consumers (discover/media/seed/bootstrap) key off the first; the
+    # second is the OS-agnostic name the top-level, BMC-only playbooks (boot, poweron)
+    # use, so they stay reusable for a non-Talos install path later.
+    - name: Assign talos provisioning groups
+      ansible.builtin.group_by:
+        key: "_baremetal_talos_{{ _baremetal_provisioning_role }}"
+      changed_when: false
+
+    - name: Assign generic provisioning groups
+      ansible.builtin.group_by:
+        key: "_baremetal_{{ _baremetal_provisioning_role }}"
+      changed_when: false
 
     - name: Debug provisioning groups # noqa: run-once[task]
       run_once: true

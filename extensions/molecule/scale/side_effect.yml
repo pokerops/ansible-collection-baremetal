@@ -565,6 +565,37 @@
         timeout: 30
       loop: "{{ groups['talos_worker_scale'] | default([]) }}"
 
+# Classification cannot tell a member that is merely off from one that was never
+# installed, and nothing in deploy powers a quiet member back on before deciding that.
+# Left to classification alone this machine would be routed through boot.yml, which the
+# two steps above already proved goes nowhere: its disk still holds a real install, and
+# the installer never gets to replace it from here. Powering it on first, the same way
+# the earlier rejoin-after-unregister step did, is what lets it be found reachable
+# instead.
+- name: Power the machine back on before scaling back out
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Power the machine on over its BMC
+      ansible.builtin.command:
+        cmd: >-
+          ansible-playbook {{ _inventories }}
+          --limit {{ _scale_machine }}
+          pokerops.baremetal.talos.poweron
+      changed_when: true
+      vars:
+        _inventories: >-
+          {{ ansible_inventory_sources | map('regex_replace', '^', '--inventory ') | join(' ') }}
+
+    - name: Wait for the machine to serve the Talos API again
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[_scale_machine].ansible_host }}"
+        port: 50000
+        timeout: "{{ baremetal_talos_api_timeout }}"
+
 - name: Scale the cluster back out
   ansible.builtin.import_playbook: pokerops.baremetal.talos.deploy
 
