@@ -77,6 +77,23 @@ it: that flag is a standing instruction rather than a guess about why a machine 
 quiet, so it is read independently and ORed back in, the one way a registered member is
 still put on the install path on purpose.
 
+Classifying a quiet registered member as staying a member is only half of it --
+something still has to say whether that is the whole story. `baremetal_talos_wakeup`,
+on by default, is classification giving it a real chance before concluding anything:
+a registered member found unreachable is powered on over its own BMC and given up to
+`baremetal_talos_api_timeout` to answer, right there in `groups.yml`, before any later
+play gets a turn. The chance is a power-on and nothing more -- reversible, unlike
+`baremetal_reinstall`, which is why this one defaults to on rather than off, and why it
+is skipped for a host `baremetal_reinstall` already claimed: that one is getting
+power-cycled again moments later regardless, so waiting here first is waiting to throw
+the wait away. A member that still does not answer fails the run loudly, right at the
+wake -- the alternative is a cluster missing a member reported as a cluster that
+converged, which is a worse failure than a loud one. `baremetal_talos_wakeup=false` is
+how a quiet member becomes explicitly not this run's problem: `network.yml` and
+`upgrade.yml` both read the same unreachable fact classification set and skip a quiet
+member instead of hard-failing on a talosctl command with nowhere to send it, reporting
+what was skipped rather than staying silent about it.
+
 This matters because pointing a machine at installer media and powering it off to get
 there takes it out of service, whatever the media then decides to do. Doing that to a
 fleet that was already built took a live six-node cluster down once. Every

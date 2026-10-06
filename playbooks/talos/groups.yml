@@ -54,19 +54,66 @@
         key: "_baremetal_inventory_nodes"
       changed_when: false
 
-    # A registered member that does not answer is read as off rather than unprovisioned
-    # -- the inventory asked for it to be a member once, and nothing here knows whether
-    # the reason it is quiet now is one that is still waiting to be dealt with by hand.
-    # baremetal_reinstall still overrides this: that is a standing instruction, not a
-    # guess, so it is allowed to put a registered member back on the install path on
-    # purpose.
+    - name: Record whether this host is a registered member
+      ansible.builtin.set_fact:
+        _baremetal_registered: "{{ inventory_hostname in (hostvars['localhost']._baremetal_registered_members | default([])) }}"
+        _baremetal_unreachable: "{{ _baremetal_provisioned.msg | default('', true) | length > 0 }}"
+
+    # Explicit and opt-out-able, not opt-in: a quiet registered member gets a real
+    # chance to answer before anything concludes it is staying that way, and the
+    # chance is a BMC power-on and nothing more -- reversible, unlike
+    # baremetal_reinstall, which is why this defaults to on. Failing here is
+    # deliberate: nothing later in this run would otherwise say a member went missing
+    # on its own. network.yml and upgrade.yml both talk straight to a member's own
+    # address with no fallback, so a quiet one would surface as a bare talosctl
+    # timeout buried in whichever of those happens to run first, not as a clear
+    # reason. baremetal_talos_wakeup=false is the explicit way to say a quiet member
+    # is not this run's to fix.
+    - name: Wake a quiet registered member before giving up on it
+      when:
+        - baremetal_talos_wakeup | bool
+        - _baremetal_registered
+        - _baremetal_unreachable
+        # baremetal_reinstall powers this same host off again moments later anyway --
+        # waiting here first would only be waiting to throw the wait away.
+        - not (baremetal_reinstall | bool)
+      block:
+        - name: Power the member on over its BMC
+          community.general.redfish_command:
+            baseuri: "{{ baremetal_bmc_address }}"
+            username: "{{ baremetal_bmc_username }}"
+            password: "{{ baremetal_bmc_password }}"
+            validate_certs: "{{ baremetal_bmc_validate_certs }}"
+            resource_id: "{{ baremetal_bmc_system_id }}"
+            category: Systems
+            command: PowerOn
+          register: _baremetal_wakeup_power
+          until: _baremetal_wakeup_power is not failed
+          retries: "{{ baremetal_bmc_retries }}"
+          delay: "{{ baremetal_bmc_retry_delay }}"
+
+        - name: Wait for the member to answer again
+          ansible.builtin.wait_for:
+            host: "{{ ansible_host }}"
+            port: "{{ _baremetal_discovery_port }}"
+            timeout: "{{ baremetal_talos_api_timeout }}"
+
+        # Only reached once the wait above has actually succeeded -- a block stops at
+        # the first failing task, and that failure is the loud one this is meant to
+        # produce. _baremetal_unreachable is stale otherwise: it was read before the
+        # power-on, and network.yml/upgrade.yml trust it as current.
+        - name: Record that the member answered
+          ansible.builtin.set_fact:
+            _baremetal_unreachable: false
+
+    # baremetal_reinstall still overrides retention: that is a standing instruction,
+    # not a guess, so it is read on its own and allowed to put a registered member
+    # back on the install path on purpose.
     - name: Determine the provisioning role
       ansible.builtin.set_fact:
         _baremetal_provisioning_role: "{{ (_reinstall or _unprovisioned) | bool | ternary('install', 'member') }}"
       vars:
-        _registered: "{{ inventory_hostname in (hostvars['localhost']._baremetal_registered_members | default([])) }}"
-        _unreachable: "{{ _baremetal_provisioned.msg | default('', true) | length > 0 }}"
-        _unprovisioned: "{{ _unreachable and not _registered }}"
+        _unprovisioned: "{{ _baremetal_unreachable and not _baremetal_registered }}"
         _reinstall: "{{ baremetal_reinstall | bool }}"
 
     # Talos-specific consumers (discover/media/seed/bootstrap) key off the first; the

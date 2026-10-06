@@ -51,23 +51,42 @@
   roles:
     - pokerops.baremetal.baremetal
   tasks:
-    - name: Read the release the node is running
-      ansible.builtin.command:
-        cmd: >-
-          talosctl version --short
-          --talosconfig {{ baremetal_talosconfig }}
-          --endpoints {{ ansible_host }}
-          --nodes {{ ansible_host }}
-      changed_when: false
-      register: _baremetal_member_release
-      failed_when: >-
-        _baremetal_member_release.rc != 0 or 'Tag:' not in _baremetal_member_release.stdout
+    # A member left unreachable on purpose (baremetal_talos_wakeup=false) is marked
+    # 'unreachable' rather than skipped outright: later plays loop over every member
+    # by name, and an undefined _baremetal_node_release would break that loop rather
+    # than just excluding the one host that has none to report.
+    - name: Report a member left unreachable on purpose
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is not answering, and nothing here is bringing it
+          back. Its release is not being checked or upgraded.
+      when: _baremetal_unreachable | default(false)
 
-    - name: Record the release the node is running
+    - name: Record that this member has no release to report
       ansible.builtin.set_fact:
-        _baremetal_node_release: "{{ _release }}"
-      vars:
-        _release: "{{ (_baremetal_member_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}"
+        _baremetal_node_release: unreachable
+      when: _baremetal_unreachable | default(false)
+
+    - name: Read the release of every member that answers
+      when: not (_baremetal_unreachable | default(false))
+      block:
+        - name: Read the release the node is running
+          ansible.builtin.command:
+            cmd: >-
+              talosctl version --short
+              --talosconfig {{ baremetal_talosconfig }}
+              --endpoints {{ ansible_host }}
+              --nodes {{ ansible_host }}
+          changed_when: false
+          register: _baremetal_member_release
+          failed_when: >-
+            _baremetal_member_release.rc != 0 or 'Tag:' not in _baremetal_member_release.stdout
+
+        - name: Record the release the node is running
+          ansible.builtin.set_fact:
+            _baremetal_node_release: "{{ _release }}"
+          vars:
+            _release: "{{ (_baremetal_member_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}"
 
 - name: Refuse to move the fleet backwards
   hosts: localhost
@@ -87,6 +106,7 @@
       loop: "{{ groups['_baremetal_talos_member'] | default([]) }}"
       loop_control:
         label: "{{ item }}"
+      when: hostvars[item]._baremetal_node_release != 'unreachable'
       vars:
         _node: "{{ hostvars[item]._baremetal_node_release | regex_replace('^v', '') }}"
         _target: "{{ _baremetal_target_release | regex_replace('^v', '') }}"
@@ -95,6 +115,8 @@
         _target_major: "{{ _target.split('.')[0] }}"
         _target_minor: "{{ _target.split('.')[1] }}"
 
+    # Members left unreachable on purpose are excluded from the comparison entirely --
+    # 'unreachable' is not a release, and there is nothing to call ahead or behind.
     - name: Assert no member runs a release newer than the target
       ansible.builtin.assert:
         that:
@@ -105,10 +127,14 @@
           this run would move the fleet backwards. Pin baremetal_talos_release to
           the release the fleet is on, or to a newer one.
       vars:
-        _members: "{{ groups['_baremetal_talos_member'] | default([]) }}"
-        _running: >-
-          {{ _members | map('extract', hostvars, '_baremetal_node_release')
+        _members_all: "{{ groups['_baremetal_talos_member'] | default([]) }}"
+        _running_all: >-
+          {{ _members_all | map('extract', hostvars, '_baremetal_node_release')
              | map('regex_replace', '^v', '') | list }}
+        _known_pairs: >-
+          {{ (_members_all | zip(_running_all) | list) | rejectattr('1', 'equalto', 'unreachable') }}
+        _members: "{{ _known_pairs | map(attribute=0) | list }}"
+        _running: "{{ _known_pairs | map(attribute=1) | list }}"
         _target: "{{ _baremetal_target_release | regex_replace('^v', '') }}"
         _ahead: >-
           {{ _members | zip(_running) | selectattr(1, 'version', _target, '>')
@@ -126,6 +152,7 @@
       ansible.builtin.include_role:
         name: pokerops.baremetal.baremetal
         tasks_from: upgrade_node
+      when: not (_baremetal_unreachable | default(false))
 
 - name: Upgrade worker nodes
   hosts: _baremetal_talos_member_worker
@@ -139,6 +166,7 @@
       ansible.builtin.include_role:
         name: pokerops.baremetal.baremetal
         tasks_from: upgrade_node
+      when: not (_baremetal_unreachable | default(false))
 
 - name: Confirm the fleet runs the target release
   hosts: _baremetal_talos_member
@@ -147,23 +175,26 @@
   roles:
     - pokerops.baremetal.baremetal
   tasks:
-    - name: Read the release the node ended up on
-      ansible.builtin.command:
-        cmd: >-
-          talosctl version --short
-          --talosconfig {{ baremetal_talosconfig }}
-          --endpoints {{ ansible_host }}
-          --nodes {{ ansible_host }}
-      changed_when: false
-      register: _baremetal_final_release
+    - name: Confirm every member that answers reached the target release
+      when: not (_baremetal_unreachable | default(false))
+      block:
+        - name: Read the release the node ended up on
+          ansible.builtin.command:
+            cmd: >-
+              talosctl version --short
+              --talosconfig {{ baremetal_talosconfig }}
+              --endpoints {{ ansible_host }}
+              --nodes {{ ansible_host }}
+          changed_when: false
+          register: _baremetal_final_release
 
-    - name: Assert the node runs the target release
-      ansible.builtin.assert:
-        that:
-          - _reported == hostvars['localhost']._baremetal_target_release
-        fail_msg: >-
-          {{ inventory_hostname }} runs {{ _reported }} rather than
-          {{ hostvars['localhost']._baremetal_target_release }}.
-      vars:
-        _reported: >-
-          {{ (_baremetal_final_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}
+        - name: Assert the node runs the target release
+          ansible.builtin.assert:
+            that:
+              - _reported == hostvars['localhost']._baremetal_target_release
+            fail_msg: >-
+              {{ inventory_hostname }} runs {{ _reported }} rather than
+              {{ hostvars['localhost']._baremetal_target_release }}.
+          vars:
+            _reported: >-
+              {{ (_baremetal_final_release.stdout.split('Tag:') | last).split() | first | default('unknown') }}
