@@ -117,17 +117,26 @@ leave maintenance mode. go-procfs' `AppendAll` treats a leading `-` on a key as 
 request to delete it outright, which is the override that actually lands:
 `-talos.halt_if_installed` in the schematic, costing nothing on a blank disk since the
 check is `Installed() && haltIfInstalled` and `Installed()` is already false there.
-The second is not something a kernel argument reaches: on this harness's simulated
-BMC, a one-time boot override reliably wins on a machine that has never installed
-anything, and reliably loses to whatever firmware boot entry Talos registered on one
-that has -- confirmed by swapping an installed disk for a blank one on an otherwise
-identical machine and watching the same override succeed where it had just failed.
-Real hardware's one-time override is implemented in firmware for exactly this case and
-does not share the limitation; this is the simulator's, not the collection's. It is
-also why a registered member is better reached by powering it back on
-(`playbooks/poweron.yml`) than by routing it through `boot.yml` a second time -- Talos
-rejoins on the disk it already has, and nothing has to win a fight with a boot entry at
-all.
+The second is not something a kernel argument reaches, and remains open: on this
+harness's simulated BMC, a one-time boot override reliably wins on a machine that has
+never installed anything, and reliably loses on one that has -- confirmed by swapping
+an installed disk for a blank one on an otherwise identical machine and watching the
+same override succeed where it had just failed. The first theory for why was a stale
+firmware boot entry outliving the override in the machine's persisted UEFI NVRAM;
+undefining and redefining the domain with `--nvram` to force a blank one, confirmed
+actually blank by asserting the backing file is gone, ruled that out instead of
+confirming it -- discovery still times out the same way against a provably clean
+NVRAM. `set_boot_device`'s per-device `<boot order=N>` elements are the more
+conventional mechanism (libvirt's standard translation to QEMU `bootindex`, which OVMF
+reapplies every boot from the `fw_cfg` hint regardless of persisted NVRAM state), which
+makes the stale-NVRAM theory an unlikely explanation on its own terms, not just an
+unverified one. What actually decides it on an installed disk is still unknown. This
+has no bearing on real hardware, where the one-time override is implemented in
+firmware for exactly this case and empirically does not share the limitation; it is
+the simulator's gap, not the collection's. It is also why a registered member is
+better reached by powering it back on (`playbooks/poweron.yml`) than by routing it
+through `boot.yml` a second time -- whatever the simulator's override is losing to,
+a member that still has its data has nothing to gain from fighting it.
 
 The classification tasks are marked `changed_when: false`. `group_by` reports changed
 unconditionally, but it only binds hosts to groups and touches nothing on a managed
