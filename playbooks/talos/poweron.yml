@@ -1,0 +1,6 @@
+---
+- name: Group provisioning hosts
+  ansible.builtin.import_playbook: pokerops.baremetal.talos.groups
+
+- name: Power on nodes
+  ansible.builtin.import_playbook: pokerops.baremetal.poweron

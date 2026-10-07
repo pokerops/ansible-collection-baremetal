@@ -1,4 +1,35 @@
 ---
+# Read ahead of classification, because a host that is merely off and a host that was
+# never installed look identical to the reachability check below -- a registered node
+# is how the two are told apart. Its own query rather than reusing the one further down
+# in "Detect cluster orphans": that one depends on the member/install split this play
+# produces, and reusing it here would mean classifying hosts before the data classification
+# depends on exists.
+- name: Detect registered cluster members
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - pokerops.baremetal.baremetal
+  tasks:
+    - name: Stat cluster kubeconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_groups_kubeconfig
+
+    - name: Query cluster nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_groups_nodes
+      failed_when: false
+      when: _baremetal_groups_kubeconfig.stat.exists
+
+    - name: Record registered cluster members
+      ansible.builtin.set_fact:
+        _baremetal_registered_members: >-
+          {{ _baremetal_groups_nodes.resources | default([]) | map(attribute='metadata.name') | list }}
+
 - name: Build provisioning groups
   hosts: "{{ baremetal_talos_controlplane_group }}:{{ baremetal_talos_worker_group }}"
   connection: local
@@ -23,13 +54,80 @@
         key: "_baremetal_inventory_nodes"
       changed_when: false
 
-    - name: Assign provisioning groups
-      ansible.builtin.group_by:
-        key: "_baremetal_talos_{{ (_reinstall or _unprovisioned) | bool | ternary('install', 'member') }}"
-      changed_when: false
+    - name: Record whether this host is a registered member
+      ansible.builtin.set_fact:
+        _baremetal_registered: "{{ inventory_hostname in (hostvars['localhost']._baremetal_registered_members | default([])) }}"
+        _baremetal_unreachable: "{{ _baremetal_provisioned.msg | default('', true) | length > 0 }}"
+
+    # Explicit and opt-out-able, not opt-in: a quiet registered member gets a real
+    # chance to answer before anything concludes it is staying that way, and the
+    # chance is a BMC power-on and nothing more -- reversible, unlike
+    # baremetal_reinstall, which is why this defaults to on. Failing here is
+    # deliberate: nothing later in this run would otherwise say a member went missing
+    # on its own. network.yml and upgrade.yml both talk straight to a member's own
+    # address with no fallback, so a quiet one would surface as a bare talosctl
+    # timeout buried in whichever of those happens to run first, not as a clear
+    # reason. baremetal_talos_wakeup=false is the explicit way to say a quiet member
+    # is not this run's to fix.
+    - name: Wake a quiet registered member before giving up on it
+      when:
+        - baremetal_talos_wakeup | bool
+        - _baremetal_registered
+        - _baremetal_unreachable
+        # baremetal_reinstall powers this same host off again moments later anyway --
+        # waiting here first would only be waiting to throw the wait away.
+        - not (baremetal_reinstall | bool)
+      block:
+        - name: Power the member on over its BMC
+          community.general.redfish_command:
+            baseuri: "{{ baremetal_bmc_address }}"
+            username: "{{ baremetal_bmc_username }}"
+            password: "{{ baremetal_bmc_password }}"
+            validate_certs: "{{ baremetal_bmc_validate_certs }}"
+            resource_id: "{{ baremetal_bmc_system_id }}"
+            category: Systems
+            command: PowerOn
+          register: _baremetal_wakeup_power
+          until: _baremetal_wakeup_power is not failed
+          retries: "{{ baremetal_bmc_retries }}"
+          delay: "{{ baremetal_bmc_retry_delay }}"
+
+        - name: Wait for the member to answer again
+          ansible.builtin.wait_for:
+            host: "{{ ansible_host }}"
+            port: "{{ _baremetal_discovery_port }}"
+            timeout: "{{ baremetal_talos_api_timeout }}"
+
+        # Only reached once the wait above has actually succeeded -- a block stops at
+        # the first failing task, and that failure is the loud one this is meant to
+        # produce. _baremetal_unreachable is stale otherwise: it was read before the
+        # power-on, and network.yml/upgrade.yml trust it as current.
+        - name: Record that the member answered
+          ansible.builtin.set_fact:
+            _baremetal_unreachable: false
+
+    # baremetal_reinstall still overrides retention: that is a standing instruction,
+    # not a guess, so it is read on its own and allowed to put a registered member
+    # back on the install path on purpose.
+    - name: Determine the provisioning role
+      ansible.builtin.set_fact:
+        _baremetal_provisioning_role: "{{ (_reinstall or _unprovisioned) | bool | ternary('install', 'member') }}"
       vars:
-        _unprovisioned: "{{ _baremetal_provisioned.msg | default('', true) | length > 0 }}"
+        _unprovisioned: "{{ _baremetal_unreachable and not _baremetal_registered }}"
         _reinstall: "{{ baremetal_reinstall | bool }}"
+
+    # Talos-specific consumers (discover/media/seed/bootstrap) key off the first; the
+    # second is the OS-agnostic name the top-level, BMC-only playbooks (boot, poweron)
+    # use, so they stay reusable for a non-Talos install path later.
+    - name: Assign talos provisioning groups
+      ansible.builtin.group_by:
+        key: "_baremetal_talos_{{ _baremetal_provisioning_role }}"
+      changed_when: false
+
+    - name: Assign generic provisioning groups
+      ansible.builtin.group_by:
+        key: "_baremetal_{{ _baremetal_provisioning_role }}"
+      changed_when: false
 
     - name: Debug provisioning groups # noqa: run-once[task]
       run_once: true
@@ -108,7 +206,45 @@
   roles:
     - pokerops.baremetal.baremetal
   tasks:
+    - name: Stat cluster talosconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_talosconfig }}"
+      register: _baremetal_cluster_talosconfig
+
     - name: Stat cluster kubeconfig
+      ansible.builtin.stat:
+        path: "{{ baremetal_kubeconfig }}"
+      register: _baremetal_cluster_kubeconfig_found
+
+    # A missing kubeconfig is not the same as an unreadable cluster: bootstrap fetches
+    # one further down this same deploy, so refusing here would refuse a condition the
+    # run goes on to fix. Fetch it first and let the refusal stand only for what a
+    # fetch cannot mend -- no credentials to ask with, or a control plane that is not
+    # answering. Tolerated rather than fatal, and skipped outright when the file is
+    # already there, which is what keeps a deploy reporting no change on a second run:
+    # `creates` would let the task run and report one, because a command it declines to
+    # execute still answers rc 0.
+    - name: Recover cluster kubeconfig
+      ansible.builtin.command:
+        cmd: >-
+          talosctl kubeconfig {{ baremetal_talos_config_directory }}
+          --talosconfig {{ baremetal_talosconfig }}
+          --endpoints {{ _endpoint }}
+          --nodes {{ _endpoint }}
+      register: _baremetal_cluster_recover
+      failed_when: false
+      changed_when: (_baremetal_cluster_recover.rc | default(1)) == 0
+      vars:
+        _control: "{{ groups['_baremetal_talos_member_control'] | default([]) }}"
+        _api_addr: "{{ baremetal_talos_api_address }}"
+        _control_addr: "{{ hostvars[_control | first].ansible_host if _control | length > 0 else '' }}"
+        _endpoint: "{{ _api_addr if _api_addr | length > 0 else _control_addr }}"
+      when:
+        - not _baremetal_cluster_kubeconfig_found.stat.exists
+        - _baremetal_cluster_talosconfig.stat.exists
+        - _endpoint | length > 0
+
+    - name: Stat the recovered cluster kubeconfig
       ansible.builtin.stat:
         path: "{{ baremetal_kubeconfig }}"
       register: _baremetal_cluster_kubeconfig

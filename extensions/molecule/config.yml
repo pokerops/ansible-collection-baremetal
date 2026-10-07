@@ -11,7 +11,9 @@ ansible:
   cfg:
     defaults:
       host_key_checking: false
-      verbosity: 1
+      verbosity: 0
+      display_ok_hosts: true
+      display_skipped_hosts: true
     ssh_connection:
       pipelining: true
   env:

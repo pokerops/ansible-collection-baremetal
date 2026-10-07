@@ -1,6 +1,6 @@
 ---
 - name: Boot nodes from virtual media
-  hosts: _baremetal_talos_install
+  hosts: _baremetal_install
   gather_facts: false
   connection: local
   roles:
@@ -31,8 +31,8 @@
         username: "{{ baremetal_bmc_username }}"
         password: "{{ baremetal_bmc_password }}"
         validate_certs: "{{ baremetal_bmc_validate_certs }}"
-      register: _baremetal_vmedia
-      until: _baremetal_vmedia is not failed
+      register: _baremetal_eject_vmedia
+      until: _baremetal_eject_vmedia is not failed
       retries: "{{ bmc_retries }}"
       delay: "{{ bmc_delay }}"
 
@@ -47,10 +47,11 @@
         command: VirtualMediaEject
         virtual_media:
           image_url: "{{ item }}"
-      loop: >-
-        {{ _baremetal_vmedia.redfish_facts.virtual_media.entries | map('last') | flatten
-           | selectattr('Image', 'defined') | map(attribute='Image')
-           | select('string') | select() | unique | list }}
+      loop: "{{ _eject }}"
+      vars:
+        _media: "{{ _baremetal_eject_vmedia.redfish_facts.virtual_media.entries | map('last') }}"
+        _image: "{{ _media | flatten | selectattr('Image', 'defined') | map(attribute='Image') }}"
+        _eject: "{{ _image | select | unique }}"
       failed_when: false
 
     - name: Insert boot media

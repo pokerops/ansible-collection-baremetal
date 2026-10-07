@@ -38,6 +38,7 @@
           customization:
             extraKernelArgs:
               - console=ttyS0
+              - -talos.halt_if_installed
             systemExtensions:
               officialExtensions:
                 - siderolabs/lldpd

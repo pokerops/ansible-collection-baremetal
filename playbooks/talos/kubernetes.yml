@@ -25,11 +25,19 @@
           {{ (_baremetal_k8s_bundle.stdout | default('')).split('kube-apiserver:v') | last
              | split() | first | default('') }}
 
+    # A control plane member's own address, not the shared one. Upgrading Kubernetes
+    # restarts the control plane components a node at a time, and the shared address
+    # floats between exactly those nodes: one connection held open for the length of
+    # the upgrade dies when it moves, and the command fails having already done the
+    # work. apid is a Talos service rather than a Kubernetes one, so it stays up
+    # across a kube-apiserver restart and a fixed node carries the whole run. The
+    # shared address remains the fallback for a fleet with no classified control
+    # plane, where there is nothing to upgrade anyway.
     - name: Record the node to drive the upgrade through
       ansible.builtin.set_fact:
         _baremetal_k8s_node: >-
-          {{ baremetal_talos_api_address if baremetal_talos_api_address | length > 0
-             else (hostvars[_control | first].ansible_host if _control | length > 0 else '') }}
+          {{ hostvars[_control | first].ansible_host if _control | length > 0
+             else baremetal_talos_api_address }}
       vars:
         _control: "{{ groups['_baremetal_talos_member_control'] | default([]) }}"
 

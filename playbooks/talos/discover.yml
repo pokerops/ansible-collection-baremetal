@@ -6,6 +6,7 @@
   roles:
     - pokerops.baremetal.baremetal
   vars:
+    _ssd: "{{ baremetal_install_disk_require_ssd }}"
     _baremetal_discovery_network: "{{ baremetal_network_gateway }}/{{ baremetal_network_prefix }}"
     _baremetal_discovery_range: "{{ _baremetal_discovery_network | ansible.utils.ipaddr('network/prefix') }}"
     _baremetal_discovery_port: 50000
@@ -14,16 +15,12 @@
     _baremetal_discovery_settle: 20
     _baremetal_require_all_interfaces: true
     _baremetal_provisioning_subnet: "{{ _baremetal_discovery_range | trim }}"
-    _baremetal_install_candidates: >-
-      {{ _baremetal_machine.disks
-         | rejectattr('cdrom') | rejectattr('readonly')
-         | rejectattr('transport', 'in', ['usb', 'mmc'])
-         | selectattr('size', 'gt', 0) | list }}
-    _baremetal_eligible_disks: >-
-      {{ (_baremetal_install_candidates | rejectattr('rotational') | list)
-         if baremetal_install_disk_require_ssd | bool else _baremetal_install_candidates }}
-    _baremetal_install_disk: >-
-      {{ _baremetal_eligible_disks | sort(attribute='size') | first | default({}, true) }}
+    _baremetal_install_devices: "{{ _baremetal_machine.disks | rejectattr('cdrom') | rejectattr('readonly') }}"
+    _baremetal_install_storage: "{{ _baremetal_install_devices | rejectattr('transport', 'in', ['usb', 'mmc']) }}"
+    _baremetal_install_candidates: "{{ _baremetal_install_storage | selectattr('size', 'gt', 0) }}"
+    _baremetal_install_ssds: "{{ _baremetal_install_candidates | rejectattr('rotational') }}"
+    _baremetal_install_disks: "{{ _baremetal_install_ssds if _ssd else _baremetal_install_candidates }}"
+    _baremetal_install_disk: "{{ _baremetal_install_disks | sort(attribute='size') | first | default({}, true) }}"
   tasks:
     - name: Scan provisioning network # noqa: run-once[task]
       run_once: true

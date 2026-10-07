@@ -1,0 +1,24 @@
+---
+- name: Power on nodes
+  hosts: _baremetal_inventory_nodes
+  gather_facts: false
+  connection: local
+  roles:
+    - pokerops.baremetal.baremetal
+  vars:
+    bmc_retries: "{{ baremetal_bmc_retries }}"
+    bmc_delay: "{{ baremetal_bmc_retry_delay }}"
+  tasks:
+    - name: Power on device
+      community.general.redfish_command:
+        baseuri: "{{ baremetal_bmc_address }}"
+        username: "{{ baremetal_bmc_username }}"
+        password: "{{ baremetal_bmc_password }}"
+        validate_certs: "{{ baremetal_bmc_validate_certs }}"
+        resource_id: "{{ baremetal_bmc_system_id }}"
+        category: Systems
+        command: PowerOn
+      register: _baremetal_power
+      until: _baremetal_power is not failed and not _baremetal_power.changed
+      retries: "{{ bmc_retries }}"
+      delay: "{{ bmc_delay }}"
